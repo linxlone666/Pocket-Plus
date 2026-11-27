@@ -167,6 +167,10 @@ final class StickLighting {
         refreshControls();
     }
 
+    boolean isOn() {
+        return left || right;
+    }
+
     private Switch createPowerSwitch(Context ui) {
         Switch toggle = new Switch(ui);
         toggle.setContentDescription(ui.getString(R.string.navigation_stick_lighting));
@@ -199,10 +203,11 @@ final class StickLighting {
 
     LightingColorWheel addControls(NavigationPanel panel, boolean wide, NavigationPanel effectsPanel) {
         panel.setHeaderControl(createPowerSwitch(panel.getContext()));
+        boolean compact = panel.isCompact();
         Context ui = panel.getContext();
         LinearLayout layout = new LinearLayout(ui);
         layout.setOrientation(wide ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
-        layout.setPadding(0, dp(ui, 8), 0, 0);
+        layout.setPadding(0, dp(ui, compact ? 4 : 8), 0, 0);
         panel.addView(layout, new LinearLayout.LayoutParams(-1, -2));
 
         LinearLayout palette = new LinearLayout(ui);
@@ -218,14 +223,14 @@ final class StickLighting {
         boolean[] rightSide = {false};
         boolean[] updating = {false};
         LightingColorWheel wheel = new LightingColorWheel(ui, value -> setColor(rightSide[0], value));
-        palette.addView(wheel, new LinearLayout.LayoutParams(-1, dp(ui, wide ? 186 : 152)));
+        palette.addView(wheel, new LinearLayout.LayoutParams(-1, dp(ui, compact ? (wide ? 122 : 112) : (wide ? 186 : 152))));
         TextView preview = new TextView(ui);
         preview.setGravity(Gravity.CENTER);
         preview.setTextSize(13);
-        LinearLayout.LayoutParams previewLayout = new LinearLayout.LayoutParams(dp(ui, 100), dp(ui, 26));
-        previewLayout.bottomMargin = dp(ui, 6);
+        LinearLayout.LayoutParams previewLayout = new LinearLayout.LayoutParams(dp(ui, 100), dp(ui, compact ? 20 : 26));
+        previewLayout.bottomMargin = dp(ui, compact ? 2 : 6);
         palette.addView(preview, previewLayout);
-        View[] swatches = addSwatches(palette, panel.foregroundColor(), rightSide);
+        View[] swatches = addSwatches(palette, panel.foregroundColor(), rightSide, compact);
         NavigationPanel speedControls = panel.controlColumn();
         if (effectsPanel == null) {
             palette.addView(speedControls, new LinearLayout.LayoutParams(-1, -2));
@@ -245,7 +250,7 @@ final class StickLighting {
                     refreshControls();
                     requestFrame();
                 });
-        speed.getLayoutParams().height = dp(ui, 34);
+        speed.getLayoutParams().height = dp(ui, compact ? 29 : 34);
 
         Switch[] lights = options.addSwitchRow(
                 new int[]{R.string.navigation_lighting_left, R.string.navigation_lighting_right},
@@ -267,7 +272,7 @@ final class StickLighting {
         Switch link = new Switch(ui);
         link.setText(R.string.navigation_lighting_link);
         link.setTextColor(panel.foregroundColor());
-        link.setMinHeight(dp(ui, 36));
+        link.setMinHeight(dp(ui, compact ? 27 : 36));
         options.addView(link, new LinearLayout.LayoutParams(-1, -2));
         link.setOnCheckedChangeListener((button, checked) -> {
             if (updating[0]) return;
@@ -327,9 +332,9 @@ final class StickLighting {
                 requestFrame();
             };
         }
-        brightnessSlider.getLayoutParams().height = dp(ui, 34);
-        saturation.getLayoutParams().height = dp(ui, 34);
-        shade.getLayoutParams().height = dp(ui, 34);
+        brightnessSlider.getLayoutParams().height = dp(ui, compact ? 29 : 34);
+        saturation.getLayoutParams().height = dp(ui, compact ? 29 : 34);
+        shade.getLayoutParams().height = dp(ui, compact ? 29 : 34);
         NavigationPanel effectChoices = effectsPanel == null ? panel : effectsPanel;
         View[] effectTiles = addChoices(effectChoices, EFFECT_LABELS, effects);
         if (effectsPanel != null) {
@@ -375,7 +380,7 @@ final class StickLighting {
         if (control.isAttachedToWindow()) controls.add(refresh);
     }
 
-    private View[] addSwatches(LinearLayout palette, int foreground, boolean[] rightSide) {
+    private View[] addSwatches(LinearLayout palette, int foreground, boolean[] rightSide, boolean compact) {
         Context ui = palette.getContext();
         LinearLayout row = new LinearLayout(ui);
         row.setGravity(Gravity.CENTER);
@@ -384,7 +389,7 @@ final class StickLighting {
         for (int i = 0; i < PRESETS.length; i++) {
             int color = PRESETS[i];
             FrameLayout cell = new FrameLayout(ui);
-            row.addView(cell, new LinearLayout.LayoutParams(0, dp(ui, 40), 1));
+            row.addView(cell, new LinearLayout.LayoutParams(0, dp(ui, compact ? 30 : 40), 1));
             View swatch = new View(ui);
             swatch.setFocusable(true);
             swatch.setContentDescription(ui.getString(PRESET_LABELS[i]));
@@ -397,7 +402,7 @@ final class StickLighting {
                     new int[]{foreground, foreground, Color.TRANSPARENT}));
             swatch.setBackground(circle);
             swatch.setOnClickListener(view -> setColor(rightSide[0], color));
-            cell.addView(swatch, new FrameLayout.LayoutParams(dp(ui, 28), dp(ui, 28), Gravity.CENTER));
+            cell.addView(swatch, new FrameLayout.LayoutParams(dp(ui, compact ? 21 : 28), dp(ui, compact ? 21 : 28), Gravity.CENTER));
             swatches[i] = swatch;
         }
         return swatches;

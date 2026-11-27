@@ -31,7 +31,17 @@ final class OverlayView extends View {
     private int segments;
     private String time;
     private int batteryPercent;
-    private boolean showChargingIndicator;
+    private ChargeSpeed chargeSpeed = ChargeSpeed.OFF;
+
+    enum ChargeSpeed {
+        OFF, UNKNOWN, SLOW, NORMAL, FAST;
+
+        static ChargeSpeed fromWatts(float watts) {
+            if (!Float.isFinite(watts) || watts <= 0) return UNKNOWN;
+            if (watts < 5f) return SLOW;
+            return watts >= 12f ? FAST : NORMAL;
+        }
+    }
     private boolean showBatteryFill;
     private String batteryLabel;
     private int panelColor;
@@ -88,7 +98,7 @@ final class OverlayView extends View {
     }
 
     void update(boolean brightness, float level, int segments, String time,
-            int batteryPercent, boolean charging, SharedPreferences settings) {
+            int batteryPercent, ChargeSpeed charging, SharedPreferences settings) {
         boolean sameMeter = this.brightness == brightness && this.segments == segments;
         float nextLevel = Math.max(0f, Math.min(1f, level));
         if (!sameMeter || nextLevel != this.level) {
@@ -113,7 +123,8 @@ final class OverlayView extends View {
         this.segments = segments;
         this.time = time;
         this.batteryPercent = batteryPercent;
-        showChargingIndicator = charging && settings.getBoolean(OverlaySettings.OVERLAY_CHARGING_INDICATOR, true);
+        chargeSpeed = settings.getBoolean(OverlaySettings.OVERLAY_CHARGING_INDICATOR, true)
+                ? charging : ChargeSpeed.OFF;
         showBatteryFill = settings.getBoolean(OverlaySettings.OVERLAY_BATTERY_FILL, true);
         boolean showBatteryPercent = settings.getBoolean(OverlaySettings.OVERLAY_BATTERY_PERCENT, false);
         batteryLabel = showBatteryPercent && batteryPercent >= 0 && batteryPercent <= 100
@@ -243,19 +254,34 @@ final class OverlayView extends View {
         if (batteryLabel != null) {
             drawBatteryLabel(canvas, filled);
         }
-        if (showChargingIndicator) {
+        if (chargeSpeed != ChargeSpeed.OFF) {
             paint.setColor(volumeColor);
-            symbol.reset();
-            symbol.moveTo(94, 37);
-            symbol.lineTo(81, 52);
-            symbol.lineTo(88, 52);
-            symbol.lineTo(85, 63);
-            symbol.lineTo(99, 47);
-            symbol.lineTo(92, 47);
-            symbol.close();
-            canvas.drawPath(symbol, paint);
+            if (chargeSpeed == ChargeSpeed.FAST) {
+                drawChargeBolt(canvas, 77f, 34f, .92f);
+                drawChargeBolt(canvas, 89f, 46f, .66f);
+            } else {
+                if (chargeSpeed == ChargeSpeed.SLOW) {
+                    paint.setStyle(Paint.Style.STROKE);
+                    paint.setStrokeWidth(2f);
+                    paint.setStrokeJoin(Paint.Join.ROUND);
+                }
+                drawChargeBolt(canvas, 81f, 37f, 1f);
+                paint.setStyle(Paint.Style.FILL);
+            }
         }
         canvas.restore();
+    }
+
+    private void drawChargeBolt(Canvas canvas, float x, float y, float scale) {
+        symbol.reset();
+        symbol.moveTo(x + 13f * scale, y);
+        symbol.lineTo(x, y + 15f * scale);
+        symbol.lineTo(x + 7f * scale, y + 15f * scale);
+        symbol.lineTo(x + 4f * scale, y + 26f * scale);
+        symbol.lineTo(x + 18f * scale, y + 10f * scale);
+        symbol.lineTo(x + 11f * scale, y + 10f * scale);
+        symbol.close();
+        canvas.drawPath(symbol, paint);
     }
 
     private void drawBatteryLabel(Canvas canvas, boolean filled) {

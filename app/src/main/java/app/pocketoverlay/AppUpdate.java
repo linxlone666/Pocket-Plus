@@ -50,21 +50,42 @@ final class AppUpdate {
         }
     }
 
-    static Release check(String installedVersion) throws IOException, JSONException {
-        ByteArrayOutputStream body = new ByteArrayOutputStream();
-        HttpURLConnection connection;
-        try {
-            connection = connect(freshReleaseUrl(LATEST), "application/vnd.github+json");
-        } catch (HttpStatusException error) {
-            if (error.status != HttpURLConnection.HTTP_FORBIDDEN && error.status != 429) throw error;
-            return checkPublicRelease(installedVersion);
+    static final class ReleaseNotes {
+        final String tag;
+        final String body;
+
+        ReleaseNotes(String tag, String body) {
+            this.tag = tag;
+            this.body = body;
         }
+    }
+
+    private static JSONObject latestRelease() throws IOException, JSONException {
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        HttpURLConnection connection = connect(freshReleaseUrl(LATEST), "application/vnd.github+json");
         try (InputStream input = connection.getInputStream()) {
             copy(input, body, MAX_METADATA_BYTES);
         } finally {
             connection.disconnect();
         }
-        JSONObject release = new JSONObject(new String(body.toByteArray(), StandardCharsets.UTF_8));
+        return new JSONObject(new String(body.toByteArray(), StandardCharsets.UTF_8));
+    }
+
+    static ReleaseNotes readReleaseNotes() throws IOException, JSONException {
+        JSONObject release = latestRelease();
+        String body = release.isNull("body") ? "" : release.optString("body").trim();
+        return new ReleaseNotes(release.getString("tag_name"), body);
+    }
+
+    static Release check(String installedVersion) throws IOException, JSONException {
+        JSONObject release;
+        try {
+            release = latestRelease();
+        } catch (HttpStatusException error) {
+            if (error.status != HttpURLConnection.HTTP_FORBIDDEN && error.status != 429) throw error;
+            return checkPublicRelease(installedVersion);
+        }
+
         if (release.getBoolean("draft") || release.getBoolean("prerelease")) return null;
         String tag = release.getString("tag_name");
         String version = tag.startsWith("v") ? tag.substring(1) : tag;

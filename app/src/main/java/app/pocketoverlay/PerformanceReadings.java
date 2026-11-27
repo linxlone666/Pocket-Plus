@@ -105,12 +105,28 @@ final class PerformanceReadings {
                 int temperature = extra(battery, BatteryManager.EXTRA_TEMPERATURE);
                 return temperature == Integer.MIN_VALUE ? Float.NaN : temperature / 10f;
             case POWER:
-                int voltage = extra(battery, BatteryManager.EXTRA_VOLTAGE);
-                int current = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW);
-                return voltage > 0 && current != Integer.MIN_VALUE ? voltage * (current / 1_000_000_000f) : Float.NaN;
+                return batteryWatts(batteryManager, battery);
             default:
                 return sample.getFloat(Integer.toString(metric.bit), Float.NaN);
         }
+    }
+
+    static float batteryWatts(BatteryManager manager, Intent battery) {
+        int voltage = extra(battery, BatteryManager.EXTRA_VOLTAGE);
+        int current = manager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW);
+        return voltage > 0 && current != Integer.MIN_VALUE ? voltage * (current / 1_000_000_000f) : Float.NaN;
+    }
+
+    static boolean externallyPowered(Intent battery) {
+        return extra(battery, BatteryManager.EXTRA_PLUGGED) > 0;
+    }
+
+    static boolean poweredWithoutCharging(Intent battery) {
+        int state = extra(battery, BatteryManager.EXTRA_STATUS);
+        return externallyPowered(battery)
+                && (state == BatteryManager.BATTERY_STATUS_NOT_CHARGING
+                        || state == BatteryManager.BATTERY_STATUS_DISCHARGING
+                        || state == BatteryManager.BATTERY_STATUS_FULL);
     }
 
     private String batteryTime(Intent battery) {
@@ -121,6 +137,10 @@ final class PerformanceReadings {
         }
 
 
+        if (poweredWithoutCharging(battery)) {
+            lastCurrentSample = 0;
+            return "—";
+        }
         int current = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW);
         int charge = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER);
         if (current == Integer.MIN_VALUE || charge <= 0) {

@@ -18,7 +18,12 @@ import android.util.Log;
 import android.view.InputDevice;
 import android.view.KeyEvent;
 
+import org.json.JSONObject;
+
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
+import java.util.function.ToIntFunction;
 import java.util.List;
 import java.util.Set;
 
@@ -179,7 +184,7 @@ final class ControllerRemap {
     boolean setSwapEnabled(boolean enabled) {
         if (!available()) return false;
         try {
-            apply(enabled, null, DEFAULT);
+            apply(enabled, this::output);
             settings.edit().putBoolean(ENABLED, enabled).apply();
             notifyListeners();
             return true;
@@ -194,7 +199,7 @@ final class ControllerRemap {
     private void refresh() {
         if (available()) {
             try {
-                apply(swapEnabled(), null, DEFAULT);
+                apply(swapEnabled(), this::output);
                 notifyListeners();
             } catch (Exception | LinkageError error) {
                 failed = true;
@@ -245,7 +250,7 @@ final class ControllerRemap {
         for (int supported : OUTPUTS) valid |= supported == output;
         if (!valid) return false;
         try {
-            apply(swapEnabled(), source, output);
+            apply(swapEnabled(), item -> item == source ? output : output(item));
             SharedPreferences.Editor editor = settings.edit();
             if (output == DEFAULT) editor.remove(OUTPUT_PREFIX + source.name());
             else editor.putInt(OUTPUT_PREFIX + source.name(), output);
@@ -260,8 +265,46 @@ final class ControllerRemap {
         }
     }
 
+    JSONObject capturePreset() {
+        Map<String, Object> values = new HashMap<>();
+        values.put(ENABLED, swapEnabled());
+        for (Source source : Source.values()) {
+            int mapping = output(source);
+            if (mapping != DEFAULT) values.put(source.name(), mapping);
+        }
+        return new JSONObject(values);
+    }
+
+    boolean applyPreset(JSONObject preset) {
+        if (!available()) return false;
+        boolean swap = preset.optBoolean(ENABLED, false);
+        ToIntFunction<Source> output = source -> {
+            int value = preset.optInt(source.name(), DEFAULT);
+            for (int code : OUTPUTS) if (code == value) return value;
+            return DEFAULT;
+        };
+        try {
+            apply(swap, output);
+            SharedPreferences.Editor edit = settings.edit().putBoolean(ENABLED, swap);
+            for (Source source : Source.values()) {
+                String key = OUTPUT_PREFIX + source.name();
+                int value = output.applyAsInt(source);
+                if (value == DEFAULT) edit.remove(key);
+                else edit.putInt(key, value);
+            }
+            edit.apply();
+            notifyListeners();
+            return true;
+        } catch (Exception | LinkageError error) {
+            failed = true;
+            Log.w("PocketRemap", "Unable to apply controller preset", error);
+            notifyListeners();
+            return false;
+        }
+    }
+
     @SuppressWarnings("unchecked")
-    private void apply(boolean swap, Source changed, int newOutput) throws Exception {
+    private void apply(boolean swap, ToIntFunction<Source> mapping) throws Exception {
         boolean flipped = Settings.System.getInt(context.getContentResolver(), FLIPPED, 0) != 0;
         Class<?> configClass = firmware.loadClass("com.ro.mapping.sdk.config."
                 + (flipped ? "FlippedGamepadConfig" : "StandardGamepadConfig"));
@@ -272,7 +315,7 @@ final class ControllerRemap {
         List<Object> keys = (List<Object>) configClass.getField("keyConfigs").get(config);
         Class<?> keyClass = firmware.loadClass("com.ro.mapping.base.config.KeyConfig");
         for (Source source : Source.values()) {
-            int output = source == changed ? newOutput : output(source);
+            int output = mapping.applyAsInt(source);
             boolean face = source == Source.A || source == Source.B || source == Source.X || source == Source.Y;
             if (output == DEFAULT && !(face && swap)) continue;
             if (output == DEFAULT) output = layoutOutput(source, swap);

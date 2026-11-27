@@ -17,6 +17,8 @@ enum PerformanceMetric {
     static final int SAMPLED = PerformanceStats.FPS | PerformanceStats.CPU | PerformanceStats.GPU
             | PerformanceStats.CPU_TEMP | PerformanceStats.GPU_TEMP | PerformanceStats.FAN_PERCENT;
     static final int DEFAULT = 255;
+    static final PerformanceMetric[] BATTERY_READINGS = {BATTERY, BATTERY_TEMPERATURE, POWER, BATTERY_TIME};
+    static final int BATTERY_MASK = BATTERY.bit | BATTERY_TEMPERATURE.bit | POWER.bit | BATTERY_TIME.bit;
     final int bit;
     final int title;
 

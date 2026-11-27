@@ -9,13 +9,16 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Typeface;
+
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.LayerDrawable;
 import android.graphics.drawable.StateListDrawable;
 import android.net.Uri;
 import android.os.Build;
@@ -23,8 +26,10 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.text.InputFilter;
 import android.text.InputType;
 import android.text.SpannableString;
+import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.TextUtils;
 import android.text.style.ImageSpan;
@@ -35,6 +40,9 @@ import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.Window;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
 import android.view.accessibility.AccessibilityManager;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -44,17 +52,28 @@ import android.widget.HorizontalScrollView;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ArrayAdapter;
+import android.widget.ListPopupWindow;
+import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
+
 import android.widget.Space;
 import android.widget.Switch;
 import android.widget.TextView;
+import android.widget.Toast;
+
+import org.json.JSONObject;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -65,17 +84,35 @@ import app.pocketoverlay.OverlaySettings.Binding;
 public final class SetupActivity extends Activity {
     static boolean visible;
     private static final String SELECTED_PAGE = "selected_page";
-    private enum Page { OVERLAY, PERFORMANCE, SETTINGS, LIGHTING, ABOUT, REMAP }
+    private enum Page {
+        OVERLAY(R.drawable.ic_nav_adjust),
+        PERFORMANCE(R.drawable.ic_nav_performance),
+        SETTINGS(R.drawable.ic_settings),
+        LIGHTING(R.drawable.ic_nav_lighting),
+        ABOUT(R.drawable.ic_nav_about),
+        REMAP(R.drawable.ic_nav_gamepad),
+        PERF_MODE(R.drawable.ic_nav_profile),
+        COLOR(R.drawable.ic_nav_color);
+
+        final int icon;
+
+        Page(int icon) {
+            this.icon = icon;
+        }
+    }
     private int background, sidebarColor, surface, accent, textColor, muted, selection;
     private SharedPreferences settings;
     private LinearLayout content;
     private ScrollView scroll;
     private TextView overlayTab;
     private TextView performanceTab;
+    private TextView perfModeTab;
     private TextView lightingTab;
     private TextView remapTab;
     private RemapDiagram remapDiagram;
     private Bitmap remapArtwork;
+    private Bitmap physicalRemapArtwork;
+    private ImageView remapRearView;
     private static final int[] CONSOLE_ARTWORK = {R.drawable.rp6_silver, R.drawable.rp6_black,
             R.drawable.rp6_16_bit, R.drawable.rp6_orange, R.drawable.rp6_light_purple};
     private StickLighting lighting;
@@ -83,9 +120,24 @@ public final class SetupActivity extends Activity {
     private Button homeProtection;
     private TextView settingsTab;
     private TextView aboutTab;
+    private TextView colorTab;
+    private TextView colorStatus;
+    private DisplayColor displayColor;
+    private SeekBar saturationSlider, temperatureSlider;
+    private final Handler colorHandler = new Handler(Looper.getMainLooper());
+    private final ExecutorService colorWorker = Executors.newSingleThreadExecutor();
+    private final Runnable applyColor = this::applyPendingColor;
+    private int pendingSaturation = -1;
+    private Integer pendingTemperature;
+    private boolean applyingColor;
+    private boolean colorScheduled;
     private PermissionCard installPermission;
     private final ExecutorService updateWorker = Executors.newSingleThreadExecutor();
     private TextView updateStatus;
+    private TextView publishedNotesText;
+    private Button publishedNotesButton;
+    private CharSequence publishedNotes;
+    private boolean loadingNotes;
     private Button checkUpdates;
     private Button downloadUpdate;
     private AppUpdate.Release availableUpdate;
@@ -108,12 +160,16 @@ public final class SetupActivity extends Activity {
     private TextView faceSwapStatus;
     private final Runnable remapChanged = this::updateRemapControls;
     private Switch performanceEnabled;
+    private Runnable refreshPerformancePreset;
     private Button[] performanceLayouts;
     private Button performancePin;
     private PerformanceStatus performanceStatus;
     private final SharedPreferences.OnSharedPreferenceChangeListener performanceState = (prefs, key) -> {
         if (performanceStatus != null && key != null && key.startsWith("performance_")) {
             performanceStatus.render();
+        }
+        if (OverlaySettings.PERFORMANCE_METRICS.equals(key) && refreshPerformancePreset != null) {
+            refreshPerformancePreset.run();
         }
         if (OverlaySettings.PERFORMANCE_LAYOUT.equals(key) && performanceLayouts != null) {
             int layout = prefs.getInt(key, OverlaySettings.PERFORMANCE_LIST);
@@ -150,7 +206,10 @@ public final class SetupActivity extends Activity {
         boolean compact = getResources().getConfiguration().screenWidthDp < 520;
         scroll = new ScrollView(this);
         scroll.setFillViewport(true);
-        shell.addView(createSidebar(), new LinearLayout.LayoutParams(dp(compact ? 102 : 164), -1));
+        shell.addView(createSidebar(compact), new LinearLayout.LayoutParams(dp(compact ? 108 : 174), -1));
+        View railEdge = new View(this);
+        railEdge.setBackgroundColor((muted & 0x00ffffff) | 0x26000000);
+        shell.addView(railEdge, new LinearLayout.LayoutParams(dp(1), -1));
         shell.addView(scroll, new LinearLayout.LayoutParams(0, -1, 1));
         content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
@@ -196,6 +255,7 @@ public final class SetupActivity extends Activity {
 
     private void showPage(Page selected) {
         boolean changedTab = page != null && page != selected;
+        UiMotion.reset(content);
         closeLightingPage();
         if (performanceStatus != null) {
             performanceStatus.close();
@@ -204,8 +264,11 @@ public final class SetupActivity extends Activity {
         page = selected;
         content.removeAllViews();
         bindingButtons.clear();
+        refreshPerformancePreset = null;
         remapDiagram = null;
         remapArtwork = null;
+        physicalRemapArtwork = null;
+        remapRearView = null;
         outputButtons.clear();
         controllerMode = null;
         gamepadTest = null;
@@ -219,30 +282,57 @@ public final class SetupActivity extends Activity {
         brightnessPermission = null;
         installPermission = null;
         updateStatus = null;
+        publishedNotesText = null;
+        publishedNotesButton = null;
         checkUpdates = null;
         downloadUpdate = null;
         permissionsPrompt = null;
+        colorStatus = null;
+        saturationSlider = temperatureSlider = null;
         overlayTab.setSelected(page == Page.OVERLAY);
         performanceTab.setSelected(page == Page.PERFORMANCE);
+        perfModeTab.setSelected(page == Page.PERF_MODE);
         lightingTab.setSelected(page == Page.LIGHTING);
         remapTab.setSelected(page == Page.REMAP);
         settingsTab.setSelected(page == Page.SETTINGS);
         aboutTab.setSelected(page == Page.ABOUT);
+        colorTab.setSelected(page == Page.COLOR);
         switch (page) {
             case OVERLAY: createOverlayPage(); break;
             case PERFORMANCE: createPerformancePage(); break;
+            case PERF_MODE: createPerfModePage(); break;
             case SETTINGS: createSettingsPage(); break;
             case LIGHTING: createLightingPage(); break;
             case ABOUT: createAboutPage(); break;
             case REMAP: createRemapPage(); break;
+            case COLOR: createDisplayColorPage(); break;
         }
         updatePermissions();
         scroll.scrollTo(0, 0);
-        if (changedTab) UiMotion.reveal(content, 0.35f, 10, 210);
+        if (changedTab) UiMotion.reveal(content, 0.80f, 5, 155);
+    }
+
+    private void addPageHeading(int title) {
+        LinearLayout heading = new LinearLayout(this);
+        heading.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(page.icon);
+        icon.setImageTintList(ColorStateList.valueOf(accent));
+        icon.setBackground(rounded(selection, 11));
+        icon.setPadding(dp(8), dp(8), dp(8), dp(8));
+        icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        heading.addView(icon, new LinearLayout.LayoutParams(dp(36), dp(36)));
+
+        TextView caption = label(title, 28, textColor, true);
+        caption.setAccessibilityHeading(true);
+        LinearLayout.LayoutParams labelLayout = new LinearLayout.LayoutParams(0, -2, 1);
+        labelLayout.setMarginStart(dp(12));
+        heading.addView(caption, labelLayout);
+        addRow(heading, 0);
     }
 
     private void createOverlayPage() {
-        addText(R.string.meters_title, 28, textColor, true, 0);
+        addPageHeading(R.string.meters_title);
         addText(R.string.setup_intro, 14, muted, false, 4);
         permissionsPrompt = addControl();
         permissionsPrompt.setText(R.string.permissions_prompt);
@@ -319,13 +409,186 @@ public final class SetupActivity extends Activity {
         });
     }
 
+    private void createPerfModePage() {
+        addPageHeading(R.string.perf_mode_page);
+        if (!PerformanceProfiles.supported()) {
+            addText(R.string.navigation_mode_unavailable, 14, muted, false, 4);
+            return;
+        }
+        addText(R.string.perf_mode_description, 14, muted, false, 4);
+        permissionsPrompt = createControl();
+        permissionsPrompt.setText(R.string.perf_mode_permission);
+        permissionsPrompt.setOnClickListener(view -> showPage(Page.SETTINGS));
+        addRow(permissionsPrompt, 8);
+        Button addApp = createPageButton(R.string.perf_mode_add, this::chooseProfileApp);
+        LinearLayout toolbar = new LinearLayout(this);
+        toolbar.addView(addApp, new LinearLayout.LayoutParams(-2, -2));
+        addRow(toolbar, 12);
+
+        List<String> apps = new ArrayList<>(PerformanceProfiles.packages(settings));
+        apps.sort(Comparator.comparing(this::profileAppLabel, String.CASE_INSENSITIVE_ORDER));
+        if (apps.isEmpty()) addText(R.string.perf_mode_no_profiles, 14, muted, false, 12);
+        for (String app : apps) addProfileRow(app);
+    }
+
+    private void addProfileRow(String app) {
+        LinearLayout card = performancePanel();
+        card.setPadding(dp(10), dp(8), dp(10), dp(8));
+        LinearLayout row = createActionRow();
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout identity = new LinearLayout(this);
+        identity.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView icon = new ImageView(this);
+        icon.setImageDrawable(profileAppIcon(app));
+        identity.addView(icon, new LinearLayout.LayoutParams(dp(28), dp(28)));
+        TextView name = label(profileAppLabel(app), 14, textColor, true);
+        name.setMaxLines(2);
+        name.setEllipsize(TextUtils.TruncateAt.END);
+        name.setPadding(dp(8), 0, 0, 0);
+        identity.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+        boolean narrow = row.getOrientation() == LinearLayout.VERTICAL;
+        row.addView(identity, narrow ? new LinearLayout.LayoutParams(-1, -2)
+                : new LinearLayout.LayoutParams(0, -2, 1));
+        LinearLayout actions = new LinearLayout(this);
+        actions.setGravity(Gravity.CENTER_VERTICAL);
+        for (PerformanceProfiles.Control control : PerformanceProfiles.Control.values()) {
+            Button choice = createControl();
+            choice.setTextSize(13);
+            choice.setMinHeight(dp(42));
+            choice.setPadding(dp(8), dp(4), dp(8), dp(4));
+            updateAppModeLabel(choice, app, control);
+            choice.setOnClickListener(view -> showAppModeMenu(choice, app, control));
+            addEqual(actions, choice);
+        }
+        Button remove = performanceOption(R.string.perf_mode_remove, () -> {
+            PerformanceProfiles.remove(settings, app);
+            showPage(Page.PERF_MODE);
+        });
+        LinearLayout.LayoutParams removeLayout = new LinearLayout.LayoutParams(-2, -2);
+        removeLayout.setMarginStart(dp(6));
+        actions.addView(remove, removeLayout);
+        LinearLayout.LayoutParams actionsLayout = narrow ? new LinearLayout.LayoutParams(-1, -2)
+                : new LinearLayout.LayoutParams(0, -2, 2.4f);
+        if (narrow) actionsLayout.topMargin = dp(8);
+        else actionsLayout.setMarginStart(dp(10));
+        row.addView(actions, actionsLayout);
+        card.addView(row);
+        addRow(card, 8);
+    }
+
+    private Drawable profileAppIcon(String app) {
+        try {
+            return getPackageManager().getApplicationIcon(app);
+        } catch (PackageManager.NameNotFoundException ignored) {
+            return getDrawable(R.mipmap.ic_launcher);
+        }
+    }
+
+    private String profileAppLabel(String app) {
+        PackageManager manager = getPackageManager();
+        try {
+            return manager.getApplicationLabel(manager.getApplicationInfo(app, 0)).toString();
+        } catch (PackageManager.NameNotFoundException ignored) {
+            return app;
+        }
+    }
+
+    private void chooseProfileApp() {
+        PackageManager manager = getPackageManager();
+        Intent launch = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+        Map<String, String> launchable = new TreeMap<>();
+        for (ResolveInfo info : manager.queryIntentActivities(launch, 0)) {
+            String app = info.activityInfo.packageName;
+            if (!PerformanceProfiles.hasProfile(settings, app)) launchable.put(app, profileAppLabel(app));
+        }
+        List<String> apps = new ArrayList<>(launchable.keySet());
+        apps.sort(Comparator.comparing(launchable::get, String.CASE_INSENSITIVE_ORDER));
+        AlertDialog.Builder dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.perf_mode_add).setNegativeButton(android.R.string.cancel, null);
+        if (apps.isEmpty()) {
+            dialog.setMessage(R.string.perf_mode_no_apps);
+        } else {
+            ArrayAdapter<String> rows = new ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, apps) {
+                @Override public View getView(int position, View recycled, ViewGroup parent) {
+                    LinearLayout row;
+                    if (recycled == null) {
+                        row = new LinearLayout(SetupActivity.this);
+                        row.setGravity(Gravity.CENTER_VERTICAL);
+                        row.setMinimumHeight(dp(50));
+                        row.setPaddingRelative(dp(18), dp(6), dp(18), dp(6));
+                        row.addView(new ImageView(SetupActivity.this), new LinearLayout.LayoutParams(dp(30), dp(30)));
+                        TextView title = label("", 15, textColor, false);
+                        title.setPaddingRelative(dp(11), 0, 0, 0);
+                        row.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+                    } else {
+                        row = (LinearLayout) recycled;
+                    }
+                    String app = getItem(position);
+                    ((ImageView) row.getChildAt(0)).setImageDrawable(profileAppIcon(app));
+                    ((TextView) row.getChildAt(1)).setText(launchable.get(app));
+                    return row;
+                }
+            };
+            dialog.setAdapter(rows, (choice, index) -> {
+                PerformanceProfiles.add(settings, apps.get(index));
+                showPage(Page.PERF_MODE);
+            });
+        }
+        showPocketDialog(dialog);
+    }
+
+    private void updateAppModeLabel(Button button, String app, PerformanceProfiles.Control control) {
+        setChoiceLabel(button, control.title, getText(control.label(control.mode(settings, app))));
+    }
+
+    private void showAppModeMenu(Button anchor, String app, PerformanceProfiles.Control control) {
+        CharSequence[] labels = new CharSequence[control.labels.length + 1];
+        labels[0] = getText(R.string.perf_mode_system);
+        int checked = 0;
+        int current = control.mode(settings, app);
+        for (int i = 0; i < control.labels.length; i++) {
+            labels[i + 1] = getText(control.labels[i]);
+            if (current == control.values[i]) checked = i + 1;
+        }
+        ListPopupWindow popup = new ListPopupWindow(this);
+        popup.setAnchorView(anchor);
+        popup.setModal(true);
+        popup.setWidth(Math.min(dp(244), Math.max(dp(208), anchor.getWidth())));
+        popup.setBackgroundDrawable(rounded(surface, 12));
+        popup.setAdapter(new ArrayAdapter<CharSequence>(this, android.R.layout.simple_list_item_single_choice, labels) {
+            @Override public View getView(int position, View convertView, ViewGroup parent) {
+                TextView option = (TextView) super.getView(position, convertView, parent);
+                option.setTextColor(textColor);
+                option.setTextSize(14);
+                return option;
+            }
+        });
+        popup.setOnItemClickListener((parent, item, position, id) -> {
+            control.save(settings, app, position == 0 ? -1 : control.values[position - 1]);
+            updateAppModeLabel(anchor, app, control);
+            popup.dismiss();
+        });
+        popup.show();
+        ListView items = popup.getListView();
+        items.setPadding(dp(4), dp(4), dp(4), dp(4));
+        items.setSelector(rounded(selection, 8));
+        items.setChoiceMode(ListView.CHOICE_MODE_SINGLE);
+        items.setItemChecked(checked, true);
+    }
+
     private void createPerformancePage() {
-        addText(R.string.performance_page, 28, textColor, true, 0);
+        addPageHeading(R.string.performance_page);
         addText(R.string.performance_intro, 14, muted, false, 4);
         permissionsPrompt = addControl();
         permissionsPrompt.setText(R.string.permissions_prompt);
         permissionsPrompt.setOnClickListener(view -> showPage(Page.SETTINGS));
         performanceEnabled = addToggle(R.string.performance_enable, OverlaySettings.PERFORMANCE_ENABLED, false);
+        EnumMap<PerformanceMetric, CheckBox> toggles = new EnumMap<>(PerformanceMetric.class);
+        addPresetControls(false, preset -> {
+            settings.edit().putInt(OverlaySettings.PERFORMANCE_METRICS, preset.metrics).apply();
+            toggles.forEach((metric, toggle) -> toggle.setChecked(metric == PerformanceMetric.BATTERY
+                    ? (preset.metrics & PerformanceMetric.BATTERY_MASK) != 0 : metric.selected(preset.metrics)));
+        });
 
         LinearLayout choices = new LinearLayout(this);
         addRow(choices, 12);
@@ -334,7 +597,8 @@ public final class SetupActivity extends Activity {
         performancePin.setOnClickListener(view -> settings.edit()
                 .putBoolean(OverlaySettings.PERFORMANCE_LOCKED, !view.isSelected()).apply());
         addEqual(choices, performancePin);
-        int[] labels = {R.string.performance_inline, R.string.performance_list, R.string.performance_full_list};
+        int[] labels = {R.string.performance_inline, R.string.performance_list,
+                R.string.performance_full_list, R.string.performance_top_grid};
         performanceLayouts = new Button[labels.length];
         int current = settings.getInt(OverlaySettings.PERFORMANCE_LAYOUT, OverlaySettings.PERFORMANCE_LIST);
         for (int i = 0; i < labels.length; i++) {
@@ -395,18 +659,13 @@ public final class SetupActivity extends Activity {
         arrangementLayout.topMargin = dp(6);
         controls.addView(arrangement, arrangementLayout);
 
-        EnumMap<PerformanceMetric, CheckBox> toggles = new EnumMap<>(PerformanceMetric.class);
-        EnumMap<PerformancePreset, View> presets = new EnumMap<>(PerformancePreset.class);
         int selected = settings.getInt(OverlaySettings.PERFORMANCE_METRICS, PerformanceMetric.DEFAULT);
         LinearLayout row = null;
         int index = 0;
         PerformanceMetric[] metricOptions = {
                 PerformanceMetric.FPS, PerformanceMetric.REFRESH_RATE,
-                PerformanceMetric.CPU, PerformanceMetric.CPU_TEMPERATURE,
-                PerformanceMetric.GPU, PerformanceMetric.GPU_TEMPERATURE,
-                PerformanceMetric.MEMORY, PerformanceMetric.FAN,
-                PerformanceMetric.BATTERY, PerformanceMetric.BATTERY_TEMPERATURE,
-                PerformanceMetric.POWER, PerformanceMetric.BATTERY_TIME
+                PerformanceMetric.CPU, PerformanceMetric.GPU,
+                PerformanceMetric.MEMORY, PerformanceMetric.FAN, PerformanceMetric.BATTERY
         };
         for (PerformanceMetric metric : metricOptions) {
             if (index++ % 2 == 0) {
@@ -419,11 +678,21 @@ public final class SetupActivity extends Activity {
             toggle.setTextSize(12);
             toggle.setMinHeight(dp(34));
             toggle.setMinimumHeight(dp(34));
-            toggle.setChecked(metric.selected(selected));
+            toggle.setChecked(metric == PerformanceMetric.BATTERY
+                    ? (selected & PerformanceMetric.BATTERY_MASK) != 0 : metric.selected(selected));
             LinearLayout option = new LinearLayout(this);
             option.setGravity(Gravity.CENTER_VERTICAL);
             option.addView(toggle, new LinearLayout.LayoutParams(0, -2, 1));
-            if (metric == PerformanceMetric.MEMORY) {
+            if (metric == PerformanceMetric.CPU || metric == PerformanceMetric.GPU) {
+                PerformanceMetric temperature = metric == PerformanceMetric.CPU
+                        ? PerformanceMetric.CPU_TEMPERATURE : PerformanceMetric.GPU_TEMPERATURE;
+                addPerformanceGear(option, temperature.title,
+                        () -> showComponentMetrics(metric, temperature, toggle));
+            } else if (metric == PerformanceMetric.FPS) {
+                addPerformanceGear(option, R.string.performance_fps_graph, this::showFpsOptions);
+            } else if (metric == PerformanceMetric.BATTERY) {
+                addPerformanceGear(option, R.string.performance_battery_fields, () -> showBatteryFields(toggle));
+            } else if (metric == PerformanceMetric.MEMORY) {
                 addPerformanceGear(option, R.string.performance_ram_format, this::showRamFormat);
             } else if (metric == PerformanceMetric.FAN) {
                 addPerformanceGear(option, R.string.performance_fan_format, this::showFanFormat);
@@ -432,29 +701,24 @@ public final class SetupActivity extends Activity {
             toggles.put(metric, toggle);
             toggle.setOnCheckedChangeListener((button, checked) -> {
                 int mask = settings.getInt(OverlaySettings.PERFORMANCE_METRICS, PerformanceMetric.DEFAULT);
+                if (metric == PerformanceMetric.BATTERY) {
+                    int activeFields = mask & PerformanceMetric.BATTERY_MASK;
+                    if (checked && activeFields == 0) {
+                        settings.edit().putInt(OverlaySettings.PERFORMANCE_METRICS,
+                                mask | batteryFields(mask)).apply();
+                    } else if (!checked && activeFields != 0) {
+                        settings.edit().putInt(OverlaySettings.PERFORMANCE_BATTERY_FIELDS, activeFields)
+                                .putInt(OverlaySettings.PERFORMANCE_METRICS, mask & ~PerformanceMetric.BATTERY_MASK).apply();
+                    }
+                    return;
+                }
                 int updated = checked ? mask | metric.bit : mask & ~metric.bit;
                 if (updated != mask) {
                     settings.edit().putInt(OverlaySettings.PERFORMANCE_METRICS, updated).apply();
-                    selectPerformancePreset(presets, updated);
                 }
             });
         }
         createStatusCards(status, preview);
-
-        addText(R.string.performance_presets, 16, accent, true, 16);
-        LinearLayout presetRow = new LinearLayout(this);
-        addRow(presetRow, 6);
-        for (PerformancePreset preset : PerformancePreset.values()) {
-            Button button = performanceButton(preset.title);
-            addEqual(presetRow, button);
-            presets.put(preset, button);
-            button.setOnClickListener(view -> {
-                settings.edit().putInt(OverlaySettings.PERFORMANCE_METRICS, preset.metrics).apply();
-                toggles.forEach((metric, toggle) -> toggle.setChecked(metric.selected(preset.metrics)));
-                selectPerformancePreset(presets, preset.metrics);
-            });
-        }
-        selectPerformancePreset(presets, selected);
 
         addText(R.string.performance_drag_hint, 13, muted, false, 10);
         addText(R.string.shortcuts_section, 16, accent, true, 16);
@@ -511,6 +775,65 @@ public final class SetupActivity extends Activity {
         row.addView(gear, params);
     }
 
+    private void showComponentMetrics(PerformanceMetric metric, PerformanceMetric temperature,
+            CheckBox usageToggle) {
+        int mask = settings.getInt(OverlaySettings.PERFORMANCE_METRICS, PerformanceMetric.DEFAULT);
+        boolean[] checked = {metric.selected(mask), temperature.selected(mask)};
+        String[] captions = {getString(R.string.performance_usage), getString(R.string.performance_temperature)};
+        showPocketDialog(new AlertDialog.Builder(this)
+                .setTitle(metric.title)
+                .setMultiChoiceItems(captions, checked, (dialog, item, active) -> checked[item] = active)
+                .setPositiveButton(android.R.string.ok, (dialog, which) -> {
+                    int updated = settings.getInt(OverlaySettings.PERFORMANCE_METRICS, PerformanceMetric.DEFAULT);
+                    updated &= ~(metric.bit | temperature.bit);
+                    if (checked[0]) updated |= metric.bit;
+                    if (checked[1]) updated |= temperature.bit;
+                    settings.edit().putInt(OverlaySettings.PERFORMANCE_METRICS, updated).apply();
+                    usageToggle.setChecked(checked[0]);
+                })
+                .setNegativeButton(android.R.string.cancel, null));
+    }
+
+    private int batteryFields(int metrics) {
+        int active = metrics & PerformanceMetric.BATTERY_MASK;
+        if (active != 0) return active;
+        int saved = settings.getInt(OverlaySettings.PERFORMANCE_BATTERY_FIELDS,
+                PerformanceMetric.DEFAULT & PerformanceMetric.BATTERY_MASK) & PerformanceMetric.BATTERY_MASK;
+        return saved == 0 ? PerformanceMetric.BATTERY.bit : saved;
+    }
+
+    private void showBatteryFields(CheckBox battery) {
+        PerformanceMetric[] fields = PerformanceMetric.BATTERY_READINGS;
+        int metrics = settings.getInt(OverlaySettings.PERFORMANCE_METRICS, PerformanceMetric.DEFAULT);
+        int initial = batteryFields(metrics);
+        CharSequence[] labels = {getText(R.string.performance_battery_level),
+                getText(R.string.metric_battery_temperature), getText(R.string.metric_power),
+                getText(R.string.metric_battery_time)};
+        boolean[] checked = new boolean[fields.length];
+        for (int i = 0; i < fields.length; i++) checked[i] = fields[i].selected(initial);
+        showPocketDialog(new AlertDialog.Builder(this).setTitle(R.string.performance_battery_fields)
+                .setMultiChoiceItems(labels, checked, (dialog, index, value) -> checked[index] = value)
+                .setPositiveButton(android.R.string.ok, (dialog, which) -> {
+                    int mask = settings.getInt(OverlaySettings.PERFORMANCE_METRICS, PerformanceMetric.DEFAULT);
+                    int selected = 0;
+                    for (int i = 0; i < fields.length; i++) if (checked[i]) selected |= fields[i].bit;
+                    settings.edit().putInt(OverlaySettings.PERFORMANCE_BATTERY_FIELDS, selected)
+                            .putInt(OverlaySettings.PERFORMANCE_METRICS, (mask & ~PerformanceMetric.BATTERY_MASK) | selected)
+                            .apply();
+                    battery.setChecked(selected != 0);
+                })
+                .setNegativeButton(android.R.string.cancel, null));
+    }
+
+    private void showFpsOptions() {
+        boolean graph = settings.getBoolean(OverlaySettings.PERFORMANCE_FPS_GRAPH, false);
+        showPocketDialog(new AlertDialog.Builder(this).setTitle(R.string.metric_fps)
+                .setMultiChoiceItems(new CharSequence[]{getText(R.string.performance_fps_graph)}, new boolean[]{graph},
+                        (dialog, which, enabled) -> settings.edit()
+                                .putBoolean(OverlaySettings.PERFORMANCE_FPS_GRAPH, enabled).apply())
+                .setPositiveButton(android.R.string.ok, null));
+    }
+
     private void showRamFormat() {
         int[] formats = {OverlaySettings.RAM_PERCENTAGE, OverlaySettings.RAM_USED_ONLY,
                 OverlaySettings.RAM_USED_TOTAL};
@@ -562,42 +885,56 @@ public final class SetupActivity extends Activity {
         EnumMap<PerformanceMetric, TextView> values = new EnumMap<>(PerformanceMetric.class);
         PerformanceMetric[] displayed = {
                 PerformanceMetric.FPS, PerformanceMetric.REFRESH_RATE,
-                PerformanceMetric.CPU, PerformanceMetric.GPU,
-                PerformanceMetric.CPU_TEMPERATURE, PerformanceMetric.GPU_TEMPERATURE,
-                PerformanceMetric.MEMORY, PerformanceMetric.FAN,
-                PerformanceMetric.BATTERY, PerformanceMetric.BATTERY_TEMPERATURE,
-                PerformanceMetric.POWER, PerformanceMetric.BATTERY_TIME
+                PerformanceMetric.CPU, PerformanceMetric.GPU, PerformanceMetric.MEMORY, PerformanceMetric.FAN
         };
-        LinearLayout row = null;
-        for (int index = 0; index < displayed.length; index++) {
-            if (index % 2 == 0) {
-                row = new LinearLayout(this);
-                row.setBaselineAligned(false);
-                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
-                params.topMargin = dp(6);
-                panel.addView(row, params);
-            }
-            PerformanceMetric metric = displayed[index];
-            LinearLayout tile = new LinearLayout(this);
-            tile.setOrientation(LinearLayout.VERTICAL);
-            tile.setPadding(dp(9), dp(5), dp(9), dp(5));
-            tile.setBackground(rounded(background, 8));
-            tile.addView(label(metric.title, 12, PerformanceHud.color(metric, darkTheme), true));
-            TextView value = new TextView(this);
-            value.setText("—");
-            value.setTextColor(textColor);
-            value.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-            value.setTextSize(14);
-            tile.addView(value);
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, -1, 1);
-            if (index % 2 != 0) {
-                params.setMarginStart(dp(6));
-            }
-            row.addView(tile, params);
-            values.put(metric, value);
+        for (int index = 0; index < displayed.length; index += 2) {
+            LinearLayout row = new LinearLayout(this);
+            row.setBaselineAligned(false);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+            params.topMargin = dp(6);
+            panel.addView(row, params);
+            addEqual(row, statusValue(displayed[index], displayed[index].title, values, true));
+            addEqual(row, statusValue(displayed[index + 1], displayed[index + 1].title, values, true));
         }
-        performanceStatus = new PerformanceStatus(this, values, preview);
+
+        LinearLayout battery = new LinearLayout(this);
+        battery.setOrientation(LinearLayout.VERTICAL);
+        battery.setBackground(rounded(background, 8));
+        battery.setPadding(dp(9), dp(5), dp(9), dp(5));
+        battery.addView(label(R.string.metric_battery, 13,
+                PerformanceHud.color(PerformanceMetric.BATTERY, darkTheme), true));
+        int[] titles = {R.string.performance_battery_level, R.string.metric_battery_temperature,
+                R.string.metric_power, R.string.metric_battery_time};
+        for (int index = 0; index < titles.length; index += 2) {
+            LinearLayout row = new LinearLayout(this);
+            row.setBaselineAligned(false);
+            battery.addView(row);
+            for (int cell = index; cell < index + 2; cell++) {
+                addEqual(row, statusValue(PerformanceMetric.BATTERY_READINGS[cell], titles[cell], values, false));
+            }
+        }
+        LinearLayout.LayoutParams batteryLayout = new LinearLayout.LayoutParams(-1, -2);
+        batteryLayout.topMargin = dp(6);
+        panel.addView(battery, batteryLayout);
+        performanceStatus = new PerformanceStatus(this, values, preview, battery);
         performanceStatus.setVisible(visible);
+    }
+
+    private LinearLayout statusValue(PerformanceMetric metric, int title,
+            EnumMap<PerformanceMetric, TextView> values, boolean separateTile) {
+        LinearLayout tile = new LinearLayout(this);
+        tile.setOrientation(LinearLayout.VERTICAL);
+        tile.setPadding(dp(separateTile ? 9 : 0), dp(5), dp(separateTile ? 9 : 0), dp(5));
+        if (separateTile) tile.setBackground(rounded(background, 8));
+        tile.addView(label(title, 12, separateTile ? PerformanceHud.color(metric, darkTheme) : muted, true));
+        TextView value = new TextView(this);
+        value.setText("—");
+        value.setTextColor(textColor);
+        value.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        value.setTextSize(14);
+        tile.addView(value);
+        values.put(metric, value);
+        return tile;
     }
 
     private void showPerformanceSlider(boolean opacity) {
@@ -759,8 +1096,196 @@ public final class SetupActivity extends Activity {
         }
     }
 
-    private void selectPerformancePreset(EnumMap<PerformancePreset, View> cards, int metrics) {
-        cards.forEach((preset, card) -> card.setSelected(preset.metrics == metrics));
+    private void addPresetControls(boolean remap, java.util.function.Consumer<PerformancePreset> applyBuiltIn) {
+        int title = remap ? R.string.remap_presets : R.string.performance_presets;
+        NamedPresets presets = new NamedPresets(settings, remap);
+        PerformancePreset[] builtIn = remap ? new PerformancePreset[0] : PerformancePreset.values();
+        Button chooser = createControl();
+        Button delete = createControl();
+        delete.setText(R.string.preset_delete);
+        Runnable refresh = () -> {
+            String name = presets.selectedName();
+            PerformancePreset current = name == null ? matchingBuiltIn(builtIn) : null;
+            boolean hasSaved = !presets.names().isEmpty();
+            boolean canChoose = builtIn.length > 0 || hasSaved;
+            CharSequence value = name != null ? name : current != null ? getText(current.title)
+                    : getText(canChoose ? R.string.preset_choose_hint : R.string.preset_none);
+            setChoiceLabel(chooser, title, value);
+            chooser.setEnabled(canChoose);
+            delete.setEnabled(hasSaved);
+        };
+        chooser.setOnClickListener(view -> choosePreset(title, presets, remap, builtIn, applyBuiltIn, refresh));
+        delete.setOnClickListener(view -> {
+            List<String> names = presets.names();
+            if (!names.isEmpty()) choosePresetToDelete(presets, names, refresh);
+        });
+        Button save = createPageButton(R.string.preset_save_named, () -> chooseSaveTarget(remap, presets, refresh));
+        LinearLayout actions = createActionRow();
+        addActionItem(actions, chooser);
+        addActionItem(actions, save);
+        addActionItem(actions, delete);
+        addRow(actions, 12);
+        if (!remap) refreshPerformancePreset = refresh;
+        refresh.run();
+    }
+
+    private PerformancePreset matchingBuiltIn(PerformancePreset[] builtIn) {
+        int metrics = settings.getInt(OverlaySettings.PERFORMANCE_METRICS, PerformanceMetric.DEFAULT);
+        for (PerformancePreset preset : builtIn) {
+            if (preset.metrics == metrics) return preset;
+        }
+        return null;
+    }
+
+    private void choosePreset(int title, NamedPresets presets, boolean remap, PerformancePreset[] builtIn,
+            java.util.function.Consumer<PerformancePreset> applyBuiltIn, Runnable refresh) {
+        List<String> names = presets.names();
+        String currentName = presets.selectedName();
+        PerformancePreset current = currentName == null ? matchingBuiltIn(builtIn) : null;
+        List<CharSequence> choices = new ArrayList<>();
+        int checked = -1;
+        for (PerformancePreset preset : builtIn) {
+            if (preset == current) checked = choices.size();
+            choices.add(getText(preset.title));
+        }
+        for (String name : names) {
+            if (name.equals(currentName)) checked = choices.size();
+            choices.add(name);
+        }
+        showPocketDialog(new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setSingleChoiceItems(choices.toArray(new CharSequence[0]), checked, (dialog, index) -> {
+                    dialog.dismiss();
+                    if (index < builtIn.length) {
+                        presets.select(null);
+                        applyBuiltIn.accept(builtIn[index]);
+                    } else {
+                        applyNamedPreset(presets, names.get(index - builtIn.length), remap);
+                    }
+                    refresh.run();
+                })
+                .setNegativeButton(android.R.string.cancel, null));
+    }
+
+    private void chooseSaveTarget(boolean remap, NamedPresets presets, Runnable refresh) {
+        if (remap && controllerRemap == null) return;
+        List<String> names = presets.names();
+        if (names.isEmpty()) {
+            saveNamedPreset(remap, presets, refresh);
+            return;
+        }
+        List<CharSequence> targets = new ArrayList<>();
+        targets.add(getText(R.string.preset_save_new));
+        for (String name : names) targets.add(getString(R.string.preset_update_target, name));
+        showPocketDialog(new AlertDialog.Builder(this).setTitle(R.string.preset_save_named)
+                .setItems(targets.toArray(new CharSequence[0]), (dialog, index) -> {
+                    if (index == 0) {
+                        saveNamedPreset(remap, presets, refresh);
+                    } else {
+                        String name = names.get(index - 1);
+                        showPocketDialog(new AlertDialog.Builder(this)
+                                .setTitle(R.string.preset_update)
+                                .setMessage(getString(R.string.preset_update_confirm, name))
+                                .setPositiveButton(R.string.preset_update, (confirm, button) -> {
+                                    boolean updated = presets.update(name, captureCurrentPreset(remap));
+                                    if (updated) refresh.run();
+                                    Toast.makeText(this, updated ? R.string.preset_saved
+                                            : R.string.preset_update_failed, Toast.LENGTH_SHORT).show();
+                                })
+                                .setNegativeButton(android.R.string.cancel, null));
+                    }
+                })
+                .setNeutralButton(R.string.preset_rename, (dialog, index) ->
+                        choosePresetToRename(presets, names, refresh))
+                .setNegativeButton(android.R.string.cancel, null));
+    }
+
+    private JSONObject captureCurrentPreset(boolean remap) {
+        return remap ? controllerRemap.capturePreset() : NamedPresets.captureHud(settings);
+    }
+
+    private void saveNamedPreset(boolean remap, NamedPresets presets, Runnable onSaved) {
+        if (remap && controllerRemap == null) return;
+        editPresetName(R.string.preset_save_named, R.string.preset_save, R.string.preset_saved, "",
+                name -> presets.save(name, captureCurrentPreset(remap)), onSaved);
+    }
+
+    private void choosePresetToRename(NamedPresets presets, List<String> names, Runnable onRenamed) {
+        showPocketDialog(new AlertDialog.Builder(this)
+                .setTitle(R.string.preset_rename)
+                .setItems(names.toArray(new String[0]), (dialog, index) -> {
+                    String original = names.get(index);
+                    editPresetName(R.string.preset_rename, R.string.preset_rename_action, R.string.preset_renamed,
+                            original, name -> presets.rename(original, name), onRenamed);
+                })
+                .setNegativeButton(android.R.string.cancel, null));
+    }
+
+    private void editPresetName(int title, int confirm, int success, String initialName,
+            java.util.function.Predicate<String> store, Runnable onChanged) {
+        EditText name = new EditText(this);
+        name.setSingleLine();
+        name.setImeOptions(EditorInfo.IME_ACTION_DONE | EditorInfo.IME_FLAG_NO_EXTRACT_UI);
+        name.setHint(R.string.preset_name_hint);
+        name.setFilters(new InputFilter[]{new InputFilter.LengthFilter(48)});
+        name.setText(initialName);
+        name.setSelectAllOnFocus(!initialName.isEmpty());
+        FrameLayout field = new FrameLayout(this);
+        field.setPadding(dp(20), 0, dp(20), 0);
+        field.addView(name);
+        AlertDialog dialog = showPocketDialog(new AlertDialog.Builder(this)
+                .setTitle(title).setView(field)
+                .setPositiveButton(confirm, null)
+                .setNegativeButton(android.R.string.cancel, null));
+        Button save = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+        name.setOnEditorActionListener((view, action, event) -> {
+            if (action != EditorInfo.IME_ACTION_DONE) return false;
+            save.performClick();
+            return true;
+        });
+        save.setOnClickListener(view -> {
+            String newName = name.getText().toString().trim();
+            if (newName.isEmpty()) {
+                name.setError(getString(R.string.preset_name_hint));
+                return;
+            }
+            if (!store.test(newName)) {
+                name.setError(getString(R.string.preset_name_duplicate));
+                return;
+            }
+            dialog.dismiss();
+            onChanged.run();
+            Toast.makeText(this, success, Toast.LENGTH_SHORT).show();
+        });
+    }
+
+    private void applyNamedPreset(NamedPresets presets, String name, boolean remap) {
+        JSONObject snapshot = presets.read(name);
+        if (snapshot == null || (remap && (controllerRemap == null || !controllerRemap.applyPreset(snapshot)))) {
+            Toast.makeText(this, R.string.preset_apply_failed, Toast.LENGTH_SHORT).show();
+        } else {
+            presets.select(name);
+            if (!remap) {
+                NamedPresets.applyHud(settings, snapshot);
+                showPage(Page.PERFORMANCE);
+            }
+        }
+    }
+
+    private void choosePresetToDelete(NamedPresets presets, List<String> names, Runnable onDeleted) {
+        showPocketDialog(new AlertDialog.Builder(this)
+                .setTitle(R.string.preset_delete)
+                .setItems(names.toArray(new String[0]), (dialog, index) -> {
+                    String name = names.get(index);
+                    showPocketDialog(new AlertDialog.Builder(this).setTitle(R.string.preset_delete)
+                            .setMessage(name)
+                            .setPositiveButton(R.string.preset_delete, (confirm, selected) -> {
+                                presets.delete(name);
+                                onDeleted.run();
+                            })
+                            .setNegativeButton(android.R.string.cancel, null));
+                })
+                .setNegativeButton(android.R.string.cancel, null));
     }
 
     private void updateRemapControls() {
@@ -788,7 +1313,7 @@ public final class SetupActivity extends Activity {
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setPadding(dp(12), dp(6), dp(12), 0);
         panel.addView(label(R.string.remap_gamepad_hint, 13, muted, false));
-        GamepadTestView gamepad = new GamepadTestView(this, remapArtwork, accent, textColor, this::keyLabel);
+        GamepadTestView gamepad = new GamepadTestView(this, physicalRemapArtwork, accent, textColor, this::keyLabel);
         int height = (int) (getResources().getConfiguration().screenHeightDp * 0.65f);
         panel.addView(gamepad, new LinearLayout.LayoutParams(-1, dp(height)));
         AlertDialog dialog = showPocketDialog(new AlertDialog.Builder(this)
@@ -801,7 +1326,7 @@ public final class SetupActivity extends Activity {
     }
 
     private void createRemapPage() {
-        addText(R.string.remap_page, 28, textColor, true, 0);
+        addPageHeading(R.string.remap_page);
         addText(R.string.remap_hint, 14, muted, false, 4);
         permissionsPrompt = addControl();
         permissionsPrompt.setText(R.string.permissions_prompt);
@@ -816,26 +1341,27 @@ public final class SetupActivity extends Activity {
             addRow(faceSwapToggle, 12);
             faceSwapStatus = label(getText(R.string.remap_swap_connecting), 13, muted, false);
             addRow(faceSwapStatus, 4);
+            addPresetControls(true, null);
         }
 
         RemapDiagram diagram = new RemapDiagram(this, accent);
         remapDiagram = diagram;
         Runnable showColor = () -> {
-            int image = consoleArtworkResource();
-            remapArtwork = BitmapFactory.decodeResource(getResources(), image);
-            diagram.setConsoleImage(image);
-            updateRemapControls();
-            refreshBindings();
+            remapArtwork = BitmapFactory.decodeResource(getResources(), consoleArtworkResource());
+            refreshPhysicalRemapArtwork();
         };
+        Switch caps = createToggle(R.string.remap_swapped_caps, swappedCaps());
+        caps.setOnCheckedChangeListener((button, checked) -> {
+            settings.edit().putBoolean(OverlaySettings.REMAP_SWAPPED_CAPS, checked).apply();
+            refreshPhysicalRemapArtwork();
+        });
+        addRow(caps, 12);
+        addText(R.string.remap_swapped_caps_hint, 13, muted, false, 4);
         Button color = createControl();
         configureChoice(color, R.string.remap_color, OverlaySettings.REMAP_COLOR, 3,
                 new int[]{0, 1, 2, 3, 4}, getResources().getStringArray(R.array.rp6_colors), showColor);
-        LinearLayout tools = new LinearLayout(this);
-        tools.setBaselineAligned(false);
-        if (getResources().getConfiguration().screenWidthDp < 600) {
-            tools.setOrientation(LinearLayout.VERTICAL);
-        }
-        addRemapTool(tools, color);
+        LinearLayout tools = createActionRow();
+        addActionItem(tools, color);
         if (controllerRemap != null) {
             LinearLayout modeStatus = new LinearLayout(this);
             modeStatus.setOrientation(LinearLayout.VERTICAL);
@@ -845,11 +1371,12 @@ public final class SetupActivity extends Activity {
             modeStatus.addView(label(R.string.remap_mode_title, 12, muted, false));
             controllerMode = label(R.string.remap_mode_unavailable, 14, textColor, true);
             modeStatus.addView(controllerMode);
-            addRemapTool(tools, modeStatus);
+
             gamepadTest = createControl();
             setChoiceLabel(gamepadTest, R.string.remap_test_gamepad, getText(R.string.remap_test_live));
             gamepadTest.setOnClickListener(view -> showGamepadTest());
-            addRemapTool(tools, gamepadTest);
+            addActionItem(tools, gamepadTest);
+            addActionItem(tools, modeStatus);
         }
         addRow(tools, 12);
         showColor.run();
@@ -880,6 +1407,8 @@ public final class SetupActivity extends Activity {
         addText(R.string.remap_rear_view, 16, accent, true, 16);
         ImageView rear = new ImageView(this);
         rear.setImageResource(R.drawable.rp6_rear);
+        remapRearView = rear;
+        rear.setColorFilter(new Rp6Palette(remapArtwork).rearFilter());
         rear.setContentDescription(getText(R.string.remap_rear_description));
         rear.setScaleType(ImageView.ScaleType.FIT_CENTER);
         rear.setMaxHeight(dp(156));
@@ -889,8 +1418,8 @@ public final class SetupActivity extends Activity {
         addRow(rear, 8);
 
         TileGrid rearButtons = new TileGrid();
-        rearButtons.add(createOutputButton(ControllerRemap.Source.M1));
         rearButtons.add(createOutputButton(ControllerRemap.Source.M2));
+        rearButtons.add(createOutputButton(ControllerRemap.Source.M1));
         addHomeAndBackControls();
         addText(R.string.shortcuts_section, 16, accent, true, 20);
         TileGrid shortcuts = new TileGrid();
@@ -904,7 +1433,16 @@ public final class SetupActivity extends Activity {
         updateRemapControls();
     }
 
-    private void addRemapTool(LinearLayout row, View tool) {
+    private LinearLayout createActionRow() {
+        LinearLayout row = new LinearLayout(this);
+        row.setBaselineAligned(false);
+        if (getResources().getConfiguration().screenWidthDp < 600) {
+            row.setOrientation(LinearLayout.VERTICAL);
+        }
+        return row;
+    }
+
+    private void addActionItem(LinearLayout row, View item) {
         boolean stacked = row.getOrientation() == LinearLayout.VERTICAL;
         LinearLayout.LayoutParams params = stacked
                 ? new LinearLayout.LayoutParams(-1, -2)
@@ -913,12 +1451,33 @@ public final class SetupActivity extends Activity {
             if (stacked) params.topMargin = dp(8);
             else params.setMarginStart(dp(8));
         }
-        row.addView(tool, params);
+        row.addView(item, params);
+    }
+
+    private boolean swappedCaps() {
+        return settings.getBoolean(OverlaySettings.REMAP_SWAPPED_CAPS, false);
+    }
+
+    private int physicalCapKey(ControllerRemap.Source source) {
+        return swappedCaps() ? RemapButtonArt.pairedFaceKey(source.key) : source.key;
+    }
+
+    private void refreshPhysicalRemapArtwork() {
+        physicalRemapArtwork = RemapButtonArt.withPhysicalCaps(remapArtwork, swappedCaps());
+        Rp6Palette palette = new Rp6Palette(remapArtwork);
+        remapDiagram.setConsoleImage(physicalRemapArtwork, palette);
+        if (remapRearView != null) remapRearView.setColorFilter(palette.rearFilter());
+        updateRemapControls();
+        // The diagram is available even when the firmware mapping service is unavailable.
+        if (controllerRemap == null) {
+            outputButtons.forEach((source, button) -> showButtonArt(button, source, KeyEvent.KEYCODE_UNKNOWN));
+        }
+        refreshBindings();
     }
 
     private String outputLabel(ControllerRemap.Source source) {
         if (source == ControllerRemap.Source.M1 || source == ControllerRemap.Source.M2) return source.input;
-        return keyLabel(source.key);
+        return keyLabel(physicalCapKey(source));
     }
 
     private Button createOutputButton(ControllerRemap.Source source) {
@@ -937,10 +1496,13 @@ public final class SetupActivity extends Activity {
         String sourceLabel = outputLabel(source);
         String outputLabel = keyLabel(output);
         boolean rear = source == ControllerRemap.Source.M1 || source == ControllerRemap.Source.M2;
-        RemapButtonArt art = new RemapButtonArt(remapArtwork, source.key, rear, sourceLabel,
+        RemapButtonArt art = new RemapButtonArt(remapArtwork, physicalCapKey(source), rear, sourceLabel,
                 output, outputLabel, accent);
-        art.setBounds(0, 0, dp(output == KeyEvent.KEYCODE_UNKNOWN ? 28 : 80), dp(28));
-        button.setCompoundDrawables(null, art, null, null);
+        LayerDrawable background = new LayerDrawable(new Drawable[]{controlBackground(true), art});
+        background.setPaddingMode(LayerDrawable.PADDING_MODE_STACK);
+        background.setLayerSize(1, dp(output == KeyEvent.KEYCODE_UNKNOWN ? 28 : 80), dp(28));
+        background.setLayerGravity(1, Gravity.CENTER);
+        button.setBackground(background);
         button.setContentDescription(output == KeyEvent.KEYCODE_UNKNOWN ? sourceLabel
                 : getString(R.string.remap_output_description, sourceLabel, outputLabel));
     }
@@ -972,8 +1534,153 @@ public final class SetupActivity extends Activity {
         return box;
     }
 
+    private void createDisplayColorPage() {
+        addPageHeading(R.string.color_page);
+        if (!DisplayColor.supported()) {
+            addText(R.string.color_unavailable, 14, muted, false, 8);
+            return;
+        }
+        if (displayColor == null) displayColor = new DisplayColor();
+        addText(R.string.color_intro, 14, muted, false, 4);
+        LinearLayout controls = performancePanel();
+        int saturation = pendingSaturation >= 0 ? pendingSaturation
+                : settings.getInt(DisplayColor.SATURATION, DisplayColor.NORMAL_SATURATION);
+        int temperature = pendingTemperature != null ? pendingTemperature
+                : settings.getInt(DisplayColor.TEMPERATURE, DisplayColor.NEUTRAL_TEMPERATURE);
+        saturationSlider = addColorSlider(controls, R.string.color_saturation, saturation, false);
+        temperatureSlider = addColorSlider(controls, R.string.color_temperature, temperature, true);
+        addRow(controls, 14);
+
+        LinearLayout preview = performancePanel();
+        preview.addView(label(R.string.color_preview, 15, textColor, true));
+        LinearLayout swatches = new LinearLayout(this);
+        swatches.setBackground(rounded(surface, 9));
+        swatches.setClipToOutline(true);
+        int[] colors = {0xffe15356, 0xfff17e39, 0xfff4c64e, 0xff50ac6a,
+                0xff40b4c2, 0xff467fe3, 0xff925dde, 0xffdf6ba2, 0xffbababa, 0xfffafafa};
+        for (int color : colors) {
+            View swatch = new View(this);
+            swatch.setBackgroundColor(color);
+            swatches.addView(swatch, new LinearLayout.LayoutParams(0, -1, 1));
+        }
+        LinearLayout.LayoutParams strip = new LinearLayout.LayoutParams(-1, dp(30));
+        strip.topMargin = dp(8);
+        preview.addView(swatches, strip);
+
+        Button reset = createPageButton(R.string.color_restore, this::restoreDisplayColor);
+        LinearLayout.LayoutParams button = new LinearLayout.LayoutParams(-2, -2);
+        button.topMargin = dp(8);
+        preview.addView(reset, button);
+        colorStatus = label("", 13, muted, false);
+        colorStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        colorStatus.setVisibility(View.GONE);
+        preview.addView(colorStatus);
+        addRow(preview, 10);
+    }
+
+    private SeekBar addColorSlider(LinearLayout controls, int title, int initial, boolean temperature) {
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.addView(label(title, 15, textColor, true), new LinearLayout.LayoutParams(0, -2, 1));
+        TextView caption = label(colorValue(initial, temperature), 13, accent, true);
+        header.addView(caption);
+        controls.addView(header);
+
+        SeekBar slider = new SeekBar(this);
+        slider.setMax(200);
+        slider.setProgress(temperature ? initial + 100 : initial);
+        slider.setProgressTintList(ColorStateList.valueOf(accent));
+        slider.setThumbTintList(ColorStateList.valueOf(accent));
+        slider.setKeyProgressIncrement(5);
+        slider.setContentDescription(getText(title));
+        slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onStartTrackingTouch(SeekBar view) {}
+            @Override public void onStopTrackingTouch(SeekBar view) {}
+            @Override public void onProgressChanged(SeekBar view, int progress, boolean fromUser) {
+                int value = temperature ? progress - 100 : progress;
+                caption.setText(colorValue(value, temperature));
+                if (!fromUser) return;
+                if (temperature) pendingTemperature = value;
+                else pendingSaturation = value;
+                scheduleDisplayColor();
+            }
+        });
+        controls.addView(slider, new LinearLayout.LayoutParams(-1, dp(38)));
+        if (temperature) {
+            LinearLayout ends = new LinearLayout(this);
+            ends.addView(label(R.string.color_cool, 12, muted, false), new LinearLayout.LayoutParams(0, -2, 1));
+            ends.addView(label(R.string.color_warm, 12, muted, false));
+            controls.addView(ends);
+        }
+        return slider;
+    }
+
+    private String colorValue(int value, boolean temperature) {
+        if (!temperature) return getString(R.string.color_percent, value);
+        if (value == 0) return getString(R.string.color_neutral);
+        return getString(value < 0 ? R.string.color_cool_amount : R.string.color_warm_amount, Math.abs(value));
+    }
+
+    private void restoreDisplayColor() {
+        saturationSlider.setProgress(DisplayColor.NORMAL_SATURATION);
+        temperatureSlider.setProgress(100);
+        pendingSaturation = DisplayColor.NORMAL_SATURATION;
+        pendingTemperature = DisplayColor.NEUTRAL_TEMPERATURE;
+        scheduleDisplayColor();
+    }
+
+    private void scheduleDisplayColor() {
+        if (!applyingColor && !colorScheduled) {
+            colorScheduled = colorHandler.postDelayed(applyColor, 75);
+        }
+    }
+
+    private void applyPendingColor() {
+        colorScheduled = false;
+        int saturation = pendingSaturation;
+        Integer temperature = pendingTemperature;
+        if (saturation < 0 && temperature == null) return;
+        pendingSaturation = -1;
+        pendingTemperature = null;
+        applyingColor = true;
+        colorWorker.execute(() -> {
+            DisplayColor.Result saturationResult = saturation < 0 ? DisplayColor.Result.APPLIED
+                    : displayColor.setSaturation(saturation);
+            DisplayColor.Result temperatureResult = temperature == null ? DisplayColor.Result.APPLIED
+                    : displayColor.setTemperature(temperature);
+            SharedPreferences.Editor saved = settings.edit();
+            if (saturation >= 0 && saturationResult == DisplayColor.Result.APPLIED) {
+                saved.putInt(DisplayColor.SATURATION, saturation);
+            }
+            if (temperature != null && temperatureResult == DisplayColor.Result.APPLIED) {
+                saved.putInt(DisplayColor.TEMPERATURE, temperature);
+            }
+            saved.apply();
+            colorHandler.post(() -> {
+                applyingColor = false;
+                if (isDestroyed()) return;
+                if (colorStatus != null) {
+                    int message = temperatureResult == DisplayColor.Result.SYSTEM_FILTER_ACTIVE
+                            ? R.string.color_filter_active
+                            : saturationResult == DisplayColor.Result.FAILED || temperatureResult == DisplayColor.Result.FAILED
+                                    ? R.string.color_apply_failed : R.string.color_applied;
+                    colorStatus.setText(message);
+                    colorStatus.setVisibility(View.VISIBLE);
+                    if (saturationResult == DisplayColor.Result.FAILED && pendingSaturation < 0) {
+                        saturationSlider.setProgress(settings.getInt(DisplayColor.SATURATION, DisplayColor.NORMAL_SATURATION));
+                    }
+                    if (temperatureResult != DisplayColor.Result.APPLIED && pendingTemperature == null) {
+                        temperatureSlider.setProgress(settings.getInt(DisplayColor.TEMPERATURE,
+                                DisplayColor.NEUTRAL_TEMPERATURE) + 100);
+                    }
+                }
+                if (pendingSaturation >= 0 || pendingTemperature != null) scheduleDisplayColor();
+            });
+        });
+    }
+
     private void createLightingPage() {
-        addText(R.string.lighting_page, 28, textColor, true, 0);
+        addPageHeading(R.string.lighting_page);
         if (!"Retroid Pocket 6".equals(Build.MODEL)) {
             addText(R.string.navigation_mode_unavailable, 14, muted, false, 4);
             return;
@@ -1022,6 +1729,10 @@ public final class SetupActivity extends Activity {
         addText(R.string.navigation_page, 16, accent, true, 20);
         addText(R.string.navigation_intro, 14, muted, false, 4);
         addToggle(R.string.navigation_enable, NavigationShortcuts.ENABLED, false);
+        Button controllerHome = createControl();
+        addRow(controllerHome, 8);
+        updateControllerHomeLabel(controllerHome);
+        controllerHome.setOnClickListener(view -> recordControllerHome(controllerHome));
 
         TileGrid gestures = new TileGrid();
         gestures.add(createNavigationChoices(true));
@@ -1034,6 +1745,41 @@ public final class SetupActivity extends Activity {
             homeProtection.setOnClickListener(view -> openRetroidSettings());
             addText(R.string.navigation_home_protection_hint, 13, muted, false, 6);
         }
+    }
+
+    private void updateControllerHomeLabel(Button button) {
+        int key = ControllerHomeShortcut.key(settings);
+        String value = key == KeyEvent.KEYCODE_UNKNOWN ? getString(R.string.shortcut_unassigned)
+                : getString(R.string.controller_home_assignment, keyLabel(key), ControllerHomeShortcut.label(settings));
+        setChoiceLabel(button, R.string.controller_home_title, value);
+    }
+
+    private void recordControllerHome(Button button) {
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.controller_home_title)
+                .setMessage(R.string.controller_home_record)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setNeutralButton(R.string.controller_home_clear, (popup, which) -> {
+                    ControllerHomeShortcut.clear(settings);
+                    updateControllerHomeLabel(button);
+                })
+                .create();
+        dialog.setOnKeyListener((popup, key, event) -> {
+            if (!ControllerHomeShortcut.canRecord(event)) return false;
+            if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()) {
+                ControllerHomeShortcut.save(settings, event);
+                updateControllerHomeLabel(button);
+                dialog.dismiss();
+            }
+            return true;
+        });
+        OverlaySettings.recordingButton = true;
+        recordingDialog = dialog;
+        dialog.setOnDismissListener(popup -> {
+            OverlaySettings.recordingButton = false;
+            recordingDialog = null;
+        });
+        showPocketDialog(dialog);
     }
 
     private LinearLayout createNavigationChoices(boolean home) {
@@ -1091,8 +1837,27 @@ public final class SetupActivity extends Activity {
         configureChoice(button, title, key, fallback.ordinal(), values, labels, null);
     }
 
+    private void addKeyboardSettings() {
+        addText(R.string.keyboard_name, 16, accent, true, 20);
+        addText(R.string.keyboard_setup, 14, muted, false, 4);
+        LinearLayout actions = createActionRow();
+        addActionItem(actions, createPageButton(R.string.keyboard_enable,
+                () -> startActivity(new Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))));
+        addActionItem(actions, createPageButton(R.string.keyboard_choose,
+                () -> getSystemService(InputMethodManager.class).showInputMethodPicker()));
+        addRow(actions, 8);
+        EditText sample = new EditText(this);
+        sample.setHint(R.string.keyboard_try);
+        sample.setSingleLine(true);
+        sample.setInputType(InputType.TYPE_CLASS_TEXT);
+        sample.setImeOptions(android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI);
+        sample.setTextColor(textColor);
+        sample.setHintTextColor(muted);
+        addRow(sample, 8);
+    }
+
     private void createSettingsPage() {
-        addText(R.string.settings_page, 28, textColor, true, 0);
+        addPageHeading(R.string.settings_page);
         addText(R.string.settings_intro, 14, muted, false, 4);
         addText(R.string.permissions_section, 16, accent, true, 20);
         shortcutPermission = addPermission(R.string.shortcuts_section, R.string.accessibility_detail,
@@ -1108,6 +1873,7 @@ public final class SetupActivity extends Activity {
                 getResources().getStringArray(R.array.app_themes), this::recreate);
         addText(R.string.theme_hint, 14, muted, false, 8);
         addToggle(R.string.interface_animations, OverlaySettings.UI_MOTION, true);
+        addKeyboardSettings();
         addText(R.string.updates_section, 16, accent, true, 20);
         installPermission = addPermission(R.string.update_install_permission, R.string.update_install_detail,
                 R.string.update_install_allow, installerSettings());
@@ -1118,28 +1884,119 @@ public final class SetupActivity extends Activity {
     }
 
     private void createAboutPage() {
-        addText(R.string.about_page, 28, textColor, true, 0);
-        addText(R.string.app_name, 20, textColor, true, 12);
-        addText(R.string.about_description, 14, muted, false, 4);
+        addPageHeading(R.string.about_page);
+        LinearLayout identity = new LinearLayout(this);
+        identity.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView appIcon = new ImageView(this);
+        appIcon.setImageResource(R.mipmap.ic_launcher);
+        identity.addView(appIcon, new LinearLayout.LayoutParams(dp(52), dp(52)));
+        LinearLayout details = new LinearLayout(this);
+        details.setOrientation(LinearLayout.VERTICAL);
+        details.setPadding(dp(12), 0, 0, 0);
+        details.addView(label(R.string.app_name, 20, textColor, true));
+        details.addView(label(getString(R.string.about_version, installedPackage().versionName), 13, muted, false));
+        identity.addView(details, new LinearLayout.LayoutParams(0, -2, 1));
+        addRow(identity, 12);
+        addText(R.string.about_description, 14, muted, false, 8);
         addText(R.string.about_compatibility, 14, muted, false, 8);
         addText(R.string.about_license, 14, muted, false, 8);
 
         addText(R.string.updates_section, 16, accent, true, 20);
-        addText(getString(R.string.about_version, installedPackage().versionName), 14, textColor, true, 6);
         updateStatus = label(R.string.update_idle, 14, muted, false);
         addRow(updateStatus, 4);
-        checkUpdates = addPageButton(R.string.update_check, this::checkForUpdate);
-        downloadUpdate = addPageButton(R.string.update_download, this::downloadUpdate);
+        LinearLayout updates = createActionRow();
+        checkUpdates = createPageButton(R.string.update_check, this::checkForUpdate);
+        downloadUpdate = createPageButton(R.string.update_install, this::downloadUpdate);
+        addActionItem(updates, checkUpdates);
+        addActionItem(updates, downloadUpdate);
+        addRow(updates, 8);
         refreshUpdateControls();
 
+        addReleaseNotes();
+
         addText(R.string.about_project, 16, accent, true, 20);
-        addPageButton(R.string.about_source, () -> openProjectLink(AppUpdate.PROJECT));
-        addPageButton(R.string.about_releases, () -> openProjectLink(AppUpdate.PROJECT + "/releases"));
-        addPageButton(R.string.about_issues, () -> openProjectLink(AppUpdate.PROJECT + "/issues"));
+        LinearLayout project = createActionRow();
+        addActionItem(project, createPageButton(R.string.about_source, () -> openProjectLink(AppUpdate.PROJECT)));
+        addActionItem(project, createPageButton(R.string.about_github_releases,
+                () -> openProjectLink(AppUpdate.PROJECT + "/releases")));
+        addActionItem(project, createPageButton(R.string.about_issues,
+                () -> openProjectLink(AppUpdate.PROJECT + "/issues")));
+        addRow(project, 8);
     }
 
-    private Button addPageButton(int title, Runnable action) {
-        Button button = addControl();
+    private void addReleaseNotes() {
+        addText(R.string.about_releases, 16, accent, true, 20);
+        LinearLayout notes = performancePanel();
+        notes.addView(label(R.string.about_build_notes, 15, textColor, true));
+        TextView changes = label(R.string.about_build_changes, 14, muted, false);
+        changes.setLineSpacing(dp(3), 1f);
+        notes.addView(changes);
+        publishedNotesButton = createPageButton(R.string.about_load_published_notes, this::loadPublishedNotes);
+        LinearLayout.LayoutParams action = new LinearLayout.LayoutParams(-2, -2);
+        action.topMargin = dp(8);
+        notes.addView(publishedNotesButton, action);
+        publishedNotesText = label("", 14, textColor, false);
+        publishedNotesText.setLineSpacing(dp(3), 1f);
+        publishedNotesText.setPadding(0, dp(8), 0, 0);
+        publishedNotesText.setTextIsSelectable(true);
+        notes.addView(publishedNotesText);
+        addRow(notes, 8);
+        refreshPublishedNotes();
+    }
+
+    private void loadPublishedNotes() {
+        if (loadingNotes) return;
+        loadingNotes = true;
+        refreshPublishedNotes();
+        updateWorker.execute(() -> {
+            CharSequence result;
+            try {
+                result = formatPublishedNotes(AppUpdate.readReleaseNotes());
+            } catch (Exception exception) {
+                result = getText(R.string.about_notes_failed);
+            }
+            CharSequence notes = result;
+            runOnUiThread(() -> {
+                if (isDestroyed() || isFinishing()) return;
+                loadingNotes = false;
+                publishedNotes = notes;
+                refreshPublishedNotes();
+            });
+        });
+    }
+
+    private void refreshPublishedNotes() {
+        if (publishedNotesText == null) return;
+        publishedNotesButton.setEnabled(!loadingNotes);
+        publishedNotesText.setVisibility(loadingNotes || publishedNotes != null ? View.VISIBLE : View.GONE);
+        publishedNotesText.setText(loadingNotes ? getText(R.string.about_notes_loading) : publishedNotes);
+    }
+
+    private CharSequence formatPublishedNotes(AppUpdate.ReleaseNotes release) {
+        SpannableStringBuilder text = new SpannableStringBuilder(getString(R.string.about_published_tag, release.tag));
+        text.setSpan(new StyleSpan(Typeface.BOLD), 0, text.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        if (release.body.isEmpty()) return text.append("\n\n").append(getText(R.string.about_notes_empty));
+        text.append('\n');
+        for (String line : release.body.split("\\r?\\n")) {
+            boolean heading = line.matches("^#{1,6}\\s+.*");
+            String clean = line.replaceFirst("^#{1,6}\\s+", "")
+                    .replaceFirst("^\\s*[-*]\\s+", "• ")
+                    .replaceAll("\\[([^\\]]+)\\]\\([^)]+\\)", "$1")
+                    .replace("**", "").replace("`", "");
+            int start = text.length();
+            text.append('\n').append(clean);
+            if (heading) text.setSpan(new StyleSpan(Typeface.BOLD), start + 1, text.length(),
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        return text;
+    }
+
+    private void addPageButton(int title, Runnable action) {
+        addRow(createPageButton(title, action), 6);
+    }
+
+    private Button createPageButton(int title, Runnable action) {
+        Button button = createControl();
         button.setText(title);
         button.setOnClickListener(view -> action.run());
         return button;
@@ -1172,9 +2029,7 @@ public final class SetupActivity extends Activity {
         if (updateStatus == null) return;
         updateStatus.setText(updateMessage == null ? getText(R.string.update_idle) : updateMessage);
         checkUpdates.setEnabled(!updateBusy);
-        downloadUpdate.setVisibility(availableUpdate == null ? View.GONE : View.VISIBLE);
-        downloadUpdate.setEnabled(!updateBusy);
-        downloadUpdate.setText(downloadedUpdate == null ? R.string.update_download : R.string.update_install);
+        downloadUpdate.setEnabled(availableUpdate != null && !updateBusy);
     }
 
     private void checkForUpdate() {
@@ -1294,37 +2149,88 @@ public final class SetupActivity extends Activity {
         return new PermissionCard(status, action);
     }
 
-    private LinearLayout createSidebar() {
+    private View createSidebar(boolean compact) {
         LinearLayout sidebar = new LinearLayout(this);
         sidebar.setOrientation(LinearLayout.VERTICAL);
-        sidebar.setPadding(dp(10), dp(22), dp(10), dp(12));
+        sidebar.setPadding(dp(10), dp(14), dp(10), dp(14));
         sidebar.setBackgroundColor(sidebarColor);
 
-        TextView brand = label(R.string.app_name, 16, textColor, true);
-        brand.setPadding(dp(8), 0, dp(8), dp(16));
-        sidebar.addView(brand);
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(compact ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+        header.setGravity(compact ? Gravity.CENTER : Gravity.START | Gravity.CENTER_VERTICAL);
+        header.setPaddingRelative(compact ? 0 : dp(8), dp(4), 0, dp(4));
+        header.setMinimumHeight(dp(42));
+        ImageView mark = new ImageView(this);
+        mark.setImageResource(R.mipmap.ic_launcher);
+        mark.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        int markSize = dp(26);
+        header.addView(mark, new LinearLayout.LayoutParams(markSize, markSize));
+        TextView brand = label(R.string.app_name, 15, textColor, true);
+        brand.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams brandLayout = new LinearLayout.LayoutParams(-2, -2);
+        if (compact) brandLayout.topMargin = dp(3);
+        else brandLayout.setMarginStart(dp(8));
+        header.addView(brand, brandLayout);
+        sidebar.addView(header, new LinearLayout.LayoutParams(-1, -2));
+        addSidebarDivider(sidebar, 9, 7);
 
-        overlayTab = addTab(sidebar, R.string.overlay_page, Page.OVERLAY);
-        performanceTab = addTab(sidebar, R.string.performance_page, Page.PERFORMANCE);
-        remapTab = addTab(sidebar, R.string.remap_page, Page.REMAP);
-        lightingTab = addTab(sidebar, R.string.lighting_page, Page.LIGHTING);
-        sidebar.addView(new Space(this), new LinearLayout.LayoutParams(1, 0, 1));
-        settingsTab = addTab(sidebar, R.string.settings_page, Page.SETTINGS);
-        aboutTab = addTab(sidebar, R.string.about_page, Page.ABOUT);
-        TextView version = label(getString(R.string.sidebar_version, installedPackage().versionName), 12, muted, false);
-        version.setPadding(dp(10), dp(3), dp(10), 0);
-        sidebar.addView(version);
-        return sidebar;
+        overlayTab = addTab(sidebar, R.string.overlay_page, Page.OVERLAY, compact);
+        performanceTab = addTab(sidebar, R.string.performance_page, Page.PERFORMANCE, compact);
+        perfModeTab = addTab(sidebar, R.string.perf_mode_page, Page.PERF_MODE, compact);
+        remapTab = addTab(sidebar, R.string.remap_page, Page.REMAP, compact);
+        lightingTab = addTab(sidebar, R.string.lighting_page, Page.LIGHTING, compact);
+        colorTab = addTab(sidebar, R.string.color_page, Page.COLOR, compact);
+        sidebar.addView(new Space(this), new LinearLayout.LayoutParams(1, dp(8), 1));
+        addSidebarDivider(sidebar, 0, 6);
+        settingsTab = addTab(sidebar, R.string.settings_page, Page.SETTINGS, compact);
+        aboutTab = addTab(sidebar, R.string.about_page, Page.ABOUT, compact);
+
+        ScrollView sideScroll = new ScrollView(this);
+        sideScroll.setFillViewport(true);
+        sideScroll.setVerticalScrollBarEnabled(false);
+        sideScroll.setBackgroundColor(sidebarColor);
+        sideScroll.addView(sidebar);
+        return sideScroll;
     }
 
-    private TextView addTab(LinearLayout sidebar, int title, Page destination) {
+    private void addSidebarDivider(LinearLayout sidebar, int top, int bottom) {
+        View divider = new View(this);
+        divider.setBackgroundColor((muted & 0x00ffffff) | 0x36000000);
+        LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(-1, dp(1));
+        layout.setMarginStart(dp(9));
+        layout.setMarginEnd(dp(9));
+        layout.topMargin = dp(top);
+        layout.bottomMargin = dp(bottom);
+        sidebar.addView(divider, layout);
+    }
+
+    private TextView addTab(LinearLayout sidebar, int title, Page destination, boolean compact) {
         TextView tab = label(title, 14, muted, true);
-        tab.setTextColor(new ColorStateList(
-                new int[][]{{android.R.attr.state_selected}, new int[0]}, new int[]{accent, muted}));
+        ColorStateList ink = new ColorStateList(
+                new int[][]{{android.R.attr.state_selected}, new int[0]}, new int[]{accent, muted});
+        tab.setTextColor(ink);
         tab.setFocusable(true);
-        tab.setGravity(Gravity.CENTER_VERTICAL);
-        tab.setPadding(dp(10), dp(11), dp(10), dp(11));
-        tab.setBackground(controlBackground(false, android.graphics.Color.TRANSPARENT));
+        tab.setGravity(compact ? Gravity.CENTER : Gravity.START | Gravity.CENTER_VERTICAL);
+        tab.setMinHeight(dp(compact ? 48 : 40));
+        tab.setPaddingRelative(dp(compact ? 8 : 12), dp(5), dp(8), dp(5));
+        Drawable icon = getDrawable(destination.icon).mutate();
+        int iconSize = dp(compact ? 16 : 18);
+        icon.setBounds(0, 0, iconSize, iconSize);
+        tab.setCompoundDrawableTintList(ink);
+        tab.setCompoundDrawablePadding(dp(compact ? 5 : 12));
+        if (compact) tab.setCompoundDrawablesRelative(null, icon, null, null);
+        else tab.setCompoundDrawablesRelative(icon, null, null, null);
+        StateListDrawable tabBackground = new StateListDrawable();
+        GradientDrawable focused = rounded(selection, 14);
+        focused.setStroke(dp(2), accent);
+        GradientDrawable active = rounded(selection, 14);
+        active.setStroke(dp(1), (accent & 0x00ffffff) | 0x52000000);
+        tabBackground.addState(new int[]{android.R.attr.state_focused}, focused);
+        tabBackground.addState(new int[]{android.R.attr.state_pressed}, rounded(selection, 14));
+        tabBackground.addState(new int[]{android.R.attr.state_selected}, active);
+        tabBackground.addState(new int[0], rounded(android.graphics.Color.TRANSPARENT, 14));
+        if (UiMotion.enabled(this)) tabBackground.setExitFadeDuration(100);
+        tab.setBackground(tabBackground);
         tab.setOnClickListener(view -> {
             if (page == destination) {
                 scroll.smoothScrollTo(0, 0);
@@ -1366,7 +2272,7 @@ public final class SetupActivity extends Activity {
             float density = (float) getResources().getDisplayMetrics().densityDpi
                     / OverlayView.REFERENCE_DENSITY_DPI;
             int size = settings.getInt(OverlaySettings.SIZE, OverlaySettings.DEFAULT_SIZE);
-            preview.update(brightness, level, steps, getString(R.string.preview_time), 68, brightness, settings);
+            preview.update(brightness, level, steps, getString(R.string.preview_time), 68, brightness ? OverlayView.ChargeSpeed.FAST : OverlayView.ChargeSpeed.OFF, settings);
             int width = Math.min(frame.getWidth(), Math.round(preview.designWidth() * density * size / 100f));
             int height = Math.round(width * OverlayView.HEIGHT / preview.designWidth());
             FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) preview.getLayoutParams();
@@ -1666,7 +2572,9 @@ public final class SetupActivity extends Activity {
         switch (key) {
             case KeyEvent.KEYCODE_BUTTON_THUMBL: return "L3";
             case KeyEvent.KEYCODE_BUTTON_THUMBR: return "R3";
-            case KeyEvent.KEYCODE_HOME: return getString(R.string.navigation_home);
+            case KeyEvent.KEYCODE_BUTTON_MODE: return getString(R.string.controller_guide);
+            case KeyEvent.KEYCODE_HOME:
+            case KeyEvent.KEYCODE_MOVE_HOME: return getString(R.string.navigation_home);
             case KeyEvent.KEYCODE_BACK: return getString(R.string.navigation_back);
             case KeyEvent.KEYCODE_DPAD_UP: return "D-pad ↑";
             case KeyEvent.KEYCODE_DPAD_DOWN: return "D-pad ↓";
@@ -1786,6 +2694,9 @@ public final class SetupActivity extends Activity {
             controllerRemap.release();
             controllerRemap = null;
         }
+        colorHandler.removeCallbacks(applyColor);
+        applyPendingColor();
+        colorWorker.shutdown();
         updateWorker.shutdownNow();
         closeLightingPage();
         settings.unregisterOnSharedPreferenceChangeListener(performanceState);
@@ -1816,7 +2727,7 @@ public final class SetupActivity extends Activity {
             showPermissionStatus(installPermission, getPackageManager().canRequestPackageInstalls());
         } else if (permissionsPrompt != null) {
             boolean needsPermission = page == Page.LIGHTING ? !brightnessAllowed
-                    : !enabled || (page == Page.OVERLAY && !brightnessAllowed);
+                    : !enabled || ((page == Page.OVERLAY || page == Page.PERF_MODE) && !brightnessAllowed);
             permissionsPrompt.setVisibility(needsPermission ? View.VISIBLE : View.GONE);
         }
     }

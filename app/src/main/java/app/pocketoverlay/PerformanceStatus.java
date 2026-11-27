@@ -21,6 +21,7 @@ final class PerformanceStatus {
     private final PerformanceReadings readings;
     private final SharedPreferences settings;
     private final TextView preview;
+    private final View batteryCard;
     private Bundle latest = Bundle.EMPTY;
     private Intent battery;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -29,10 +30,11 @@ final class PerformanceStatus {
     private boolean visible;
     private boolean sampling;
 
-    PerformanceStatus(Context context, Map<PerformanceMetric, TextView> values, TextView preview) {
+    PerformanceStatus(Context context, Map<PerformanceMetric, TextView> values, TextView preview, View batteryCard) {
         this.context = context;
         this.values = values;
         this.preview = preview;
+        this.batteryCard = batteryCard;
         settings = OverlaySettings.open(context);
         readings = new PerformanceReadings(context);
     }
@@ -68,8 +70,25 @@ final class PerformanceStatus {
     }
 
     void render() {
+        int metrics = settings.getInt(OverlaySettings.PERFORMANCE_METRICS, PerformanceMetric.DEFAULT);
+        batteryCard.setVisibility((metrics & PerformanceMetric.BATTERY_MASK) != 0 ? View.VISIBLE : View.GONE);
         values.forEach((metric, view) -> {
+            if ((metric.bit & PerformanceMetric.BATTERY_MASK) != 0) {
+                ((View) view.getParent()).setVisibility(metric.selected(metrics) ? View.VISIBLE : View.GONE);
+                if (!metric.selected(metrics)) return;
+            }
+            if (metric == PerformanceMetric.POWER && PerformanceReadings.poweredWithoutCharging(battery)) {
+                CharSequence plug = PerformanceHud.plugValue();
+                if (!android.text.TextUtils.equals(plug, view.getText())) view.setText(plug);
+                return;
+            }
             String value = readings.value(metric, battery, latest);
+            if (metric == PerformanceMetric.CPU || metric == PerformanceMetric.GPU) {
+                PerformanceMetric temperature = metric == PerformanceMetric.CPU
+                        ? PerformanceMetric.CPU_TEMPERATURE : PerformanceMetric.GPU_TEMPERATURE;
+                value = context.getString(R.string.performance_component_values, value,
+                        readings.value(temperature, battery, latest));
+            }
             if (!value.contentEquals(view.getText())) {
                 view.setText(value);
             }

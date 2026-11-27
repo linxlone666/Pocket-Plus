@@ -17,13 +17,15 @@ final class UiMotion {
                 && OverlaySettings.open(context).getBoolean(OverlaySettings.UI_MOTION, true);
     }
 
-    static void reveal(View view, float startAlpha, int travelDp, long duration) {
+    static void reset(View view) {
         view.animate().cancel();
-        if (!enabled(view.getContext())) {
-            view.setAlpha(1f);
-            view.setTranslationY(0f);
-            return;
-        }
+        view.setAlpha(1f);
+        view.setTranslationY(0f);
+    }
+
+    static void reveal(View view, float startAlpha, int travelDp, long duration) {
+        reset(view);
+        if (!enabled(view.getContext())) return;
         view.setAlpha(startAlpha);
         view.setTranslationY(travelDp * view.getResources().getDisplayMetrics().density);
         view.animate().alpha(1f).translationY(0f).setDuration(duration).setInterpolator(ENTER).start();

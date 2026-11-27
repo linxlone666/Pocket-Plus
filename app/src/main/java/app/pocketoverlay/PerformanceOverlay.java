@@ -25,6 +25,7 @@ import android.view.WindowManager;
 import android.view.WindowMetrics;
 import android.widget.TextView;
 
+import java.util.ArrayDeque;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -62,6 +63,7 @@ final class PerformanceOverlay implements SharedPreferences.OnSharedPreferenceCh
     private float dragY;
     private Bundle sampledReadings = Bundle.EMPTY;
     private boolean sampling;
+    private final ArrayDeque<Float> fpsHistory = new ArrayDeque<>();
 
     PerformanceOverlay(Context context, SharedPreferences settings, WindowManager windows) {
         this.context = context;
@@ -104,6 +106,7 @@ final class PerformanceOverlay implements SharedPreferences.OnSharedPreferenceCh
     public void onSharedPreferenceChanged(SharedPreferences preferences, String key) {
         if (OverlaySettings.PERFORMANCE_ENABLED.equals(key)
                 || OverlaySettings.PERFORMANCE_POSITION.equals(key)
+                || OverlaySettings.PERFORMANCE_FPS_GRAPH.equals(key)
                 || OverlaySettings.PERFORMANCE_RAM_FORMAT.equals(key)
                 || OverlaySettings.PERFORMANCE_FAN_FORMAT.equals(key)
                 || OverlaySettings.PERFORMANCE_ORDER.equals(key)
@@ -114,7 +117,7 @@ final class PerformanceOverlay implements SharedPreferences.OnSharedPreferenceCh
                 || OverlaySettings.PERFORMANCE_LOCKED.equals(key)
                 || OverlaySettings.PERFORMANCE_METRICS.equals(key) || OverlaySettings.THEME.equals(key)) {
             if (panel != null && (OverlaySettings.PERFORMANCE_LOCKED.equals(key)
-                    || OverlaySettings.UI_MOTION.equals(key))) {
+                    || OverlaySettings.UI_MOTION.equals(key) || OverlaySettings.PERFORMANCE_LAYOUT.equals(key))) {
                 setTouchability(placement);
                 placement.windowAnimations = UiMotion.enabled(context) ? R.style.PocketHudMotion : 0;
                 windows.updateViewLayout(panel, placement);
@@ -122,7 +125,7 @@ final class PerformanceOverlay implements SharedPreferences.OnSharedPreferenceCh
             TextView previous = panel;
             refresh();
             if (panel != null && panel == previous && OverlaySettings.PERFORMANCE_LAYOUT.equals(key)) {
-                UiMotion.reveal(panel, 0.55f, 0, 175);
+                UiMotion.reveal(panel, 0.82f, 0, 135);
             }
         }
     }
@@ -185,6 +188,17 @@ final class PerformanceOverlay implements SharedPreferences.OnSharedPreferenceCh
             handler.post(() -> {
                 sampling = false;
                 if (panel != null) {
+                    if (PerformanceMetric.FPS.selected(metrics) && PerformanceMetric.FPS.selected(selectedMetrics())
+                            && settings.getBoolean(OverlaySettings.PERFORMANCE_FPS_GRAPH, false)) {
+                        if (fpsHistory.size() == PerformanceHud.FPS_HISTORY_LENGTH) fpsHistory.removeFirst();
+                        fpsHistory.addLast(latest.getFloat(Integer.toString(PerformanceMetric.FPS.bit), Float.NaN));
+                        float[] points = new float[fpsHistory.size()];
+                        int index = 0;
+                        for (float sample : fpsHistory) points[index++] = sample;
+                        latest.putFloatArray(PerformanceHud.FPS_HISTORY, points);
+                    } else {
+                        fpsHistory.clear();
+                    }
                     sampledReadings = latest;
                     if (!dragging) {
                         render(selectedMetrics());
@@ -222,7 +236,7 @@ final class PerformanceOverlay implements SharedPreferences.OnSharedPreferenceCh
     }
 
     private void setTouchability(WindowManager.LayoutParams layout) {
-        if (settings.getBoolean(OverlaySettings.PERFORMANCE_LOCKED, false)) {
+        if (topGrid() || settings.getBoolean(OverlaySettings.PERFORMANCE_LOCKED, false)) {
             layout.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
         } else {
             layout.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
@@ -252,12 +266,22 @@ final class PerformanceOverlay implements SharedPreferences.OnSharedPreferenceCh
         }
         Rect area = movementBounds();
         updateWidth(area);
+        if (topGrid()) {
+            move(area, area.left, area.top);
+            return;
+        }
         int corner = settings.getInt(OverlaySettings.PERFORMANCE_POSITION,
                 OverlaySettings.PERFORMANCE_DEFAULT_POSITION);
-        float x = settings.getFloat(OverlaySettings.PERFORMANCE_X, corner % 2);
-        float y = settings.getFloat(OverlaySettings.PERFORMANCE_Y, corner / 2);
+        boolean centered = corner == OverlaySettings.PERFORMANCE_TOP_CENTER;
+        float x = settings.getFloat(OverlaySettings.PERFORMANCE_X, centered ? .5f : corner % 2);
+        float y = settings.getFloat(OverlaySettings.PERFORMANCE_Y, centered ? 0f : corner / 2);
         move(area, area.left + Math.round(x * availableWidth(area)),
                 area.top + Math.round(y * availableHeight(area)));
+    }
+
+    private boolean topGrid() {
+        return settings.getInt(OverlaySettings.PERFORMANCE_LAYOUT, OverlaySettings.PERFORMANCE_LIST)
+                == OverlaySettings.PERFORMANCE_TOP_GRID;
     }
 
     private void updateWidth(Rect area) {
@@ -267,7 +291,9 @@ final class PerformanceOverlay implements SharedPreferences.OnSharedPreferenceCh
         }
         // Android caps the default wrap-content width of floating windows.
         int width = WindowManager.LayoutParams.WRAP_CONTENT;
-        if (panel.getMaxLines() == 1) {
+        if (topGrid()) {
+            width = maxWidth;
+        } else if (panel.getMaxLines() == 1) {
             int textWidth = (int) Math.ceil(Layout.getDesiredWidth(panel.getText(), panel.getPaint()));
             width = Math.min(maxWidth, textWidth + panel.getPaddingLeft() + panel.getPaddingRight() + 2);
         }
@@ -362,6 +388,7 @@ final class PerformanceOverlay implements SharedPreferences.OnSharedPreferenceCh
             pinched = false;
             dragging = false;
         }
+        fpsHistory.clear();
         sampledReadings = Bundle.EMPTY;
     }
 

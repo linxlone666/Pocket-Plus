@@ -1,7 +1,9 @@
 package app.pocketoverlay;
 
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.view.Gravity;
@@ -29,9 +31,10 @@ final class RemapDiagram extends LinearLayout {
     private final LinearLayout right;
     private final Paint ink = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path line = new Path();
-    private final Path trigger = new Path();
-    private final Path bumper = new Path();
+    private final Path trigger = RemapButtonArt.shoulderShape(true);
+    private final Path bumper = RemapButtonArt.shoulderShape(false);
     private final Paint plastic = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private Rp6Palette palette = new Rp6Palette(null);
     private final Map<Button, IntSupplier> boxes = new LinkedHashMap<>();
 
     RemapDiagram(Context context, int color) {
@@ -40,20 +43,6 @@ final class RemapDiagram extends LinearLayout {
         shoulders = new LinearLayout(context);
         addView(shoulders, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
         addView(new Space(context), new LayoutParams(LayoutParams.MATCH_PARENT, dp(66)));
-        trigger.moveTo(0, 32);
-        trigger.cubicTo(3, 13, 8, 1, 26, 0);
-        trigger.quadTo(33, 0, 33, 6);
-        trigger.lineTo(33, 28);
-        trigger.close();
-
-        bumper.moveTo(0, 16);
-        bumper.quadTo(3, 8, 10, 6);
-        bumper.quadTo(27, 0, 39, 0);
-        bumper.quadTo(46, 0, 53, 6);
-        bumper.lineTo(48, 17);
-        bumper.quadTo(23, 10, 0, 16);
-        bumper.close();
-
         body = new LinearLayout(context);
         body.setGravity(Gravity.CENTER_VERTICAL);
         addView(body, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
@@ -75,8 +64,9 @@ final class RemapDiagram extends LinearLayout {
         return column;
     }
 
-    void setConsoleImage(int drawable) {
-        console.setImageResource(drawable);
+    void setConsoleImage(Bitmap bitmap, Rp6Palette colors) {
+        palette = colors;
+        console.setImageBitmap(bitmap);
         invalidate();
     }
 
@@ -114,17 +104,17 @@ final class RemapDiagram extends LinearLayout {
         float imageX = console.getLeft() + (console.getWidth() - 736 * scale) / 2f;
         float imageY = body.getTop() + console.getTop() + (console.getHeight() - 312 * scale) / 2f;
         float imageWidth = 736 * scale;
-        float leftTrigger = imageX + imageWidth * 0.16f;
-        float rightTrigger = imageX + imageWidth * 0.84f;
-        float leftBumper = imageX + imageWidth * 0.095f;
-        float rightBumper = imageX + imageWidth * 0.905f;
-        float triggerTop = shoulders.getBottom() + dp(12);
-        float bumperTop = triggerTop + dp(34);
+        float shoulderWidth = Math.min(imageWidth * .18f, dp(74));
+        float leftShoulder = imageX + shoulderWidth * .54f;
+        float rightShoulder = imageX + imageWidth - shoulderWidth * .54f;
+        float triggerTop = shoulders.getBottom() + dp(7);
+        float bumperTop = triggerTop + dp(25);
 
-        drawShoulder(canvas, trigger, leftTrigger, triggerTop, 33, false);
-        drawShoulder(canvas, trigger, rightTrigger, triggerTop, 33, true);
-        drawShoulder(canvas, bumper, leftBumper, bumperTop, 53, false);
-        drawShoulder(canvas, bumper, rightBumper, bumperTop, 53, true);
+        drawTopEdge(canvas, imageX, imageWidth, triggerTop);
+        drawShoulder(canvas, trigger, leftShoulder, triggerTop, shoulderWidth, dp(37), false);
+        drawShoulder(canvas, trigger, rightShoulder, triggerTop, shoulderWidth, dp(37), true);
+        drawShoulder(canvas, bumper, leftShoulder, bumperTop, shoulderWidth, dp(30), false);
+        drawShoulder(canvas, bumper, rightShoulder, bumperTop, shoulderWidth, dp(30), true);
 
         for (Map.Entry<Button, IntSupplier> entry : boxes.entrySet()) {
             int key = entry.getValue().getAsInt();
@@ -137,10 +127,10 @@ final class RemapDiagram extends LinearLayout {
             line.reset();
             if (column == shoulders) {
                 switch (key) {
-                    case KeyEvent.KEYCODE_BUTTON_L1: x = leftBumper; y = bumperTop + dp(8); break;
-                    case KeyEvent.KEYCODE_BUTTON_L2: x = leftTrigger; y = triggerTop + dp(17); break;
-                    case KeyEvent.KEYCODE_BUTTON_R1: x = rightBumper; y = bumperTop + dp(8); break;
-                    case KeyEvent.KEYCODE_BUTTON_R2: x = rightTrigger; y = triggerTop + dp(17); break;
+                    case KeyEvent.KEYCODE_BUTTON_L1: x = leftShoulder; y = bumperTop + dp(14); break;
+                    case KeyEvent.KEYCODE_BUTTON_L2: x = leftShoulder; y = triggerTop + dp(18); break;
+                    case KeyEvent.KEYCODE_BUTTON_R1: x = rightShoulder; y = bumperTop + dp(14); break;
+                    case KeyEvent.KEYCODE_BUTTON_R2: x = rightShoulder; y = triggerTop + dp(18); break;
                     default: break;
                 }
                 float center = box.getLeft() + box.getWidth() / 2f;
@@ -153,6 +143,9 @@ final class RemapDiagram extends LinearLayout {
                 line.moveTo(edge, boxY);
                 line.lineTo(edge + dp(leftSide ? 8 : -8), boxY);
             }
+            if (RemapButtonArt.isSystemCap(key)) {
+                x += (column == left ? -8 : 8) * scale;
+            }
             line.lineTo(x, y);
             ink.setStyle(Paint.Style.STROKE);
             canvas.drawPath(line, ink);
@@ -161,18 +154,33 @@ final class RemapDiagram extends LinearLayout {
         }
     }
 
-    private void drawShoulder(Canvas canvas, Path shape, float center, float top,
-                              int width, boolean mirror) {
-        float density = getResources().getDisplayMetrics().density;
-        canvas.save();
-        canvas.translate(center + dp(width) * (mirror ? 0.5f : -0.5f), top);
-        canvas.scale(mirror ? -density : density, density);
+    private void drawTopEdge(Canvas canvas, float left, float width, float top) {
+        float y = top + dp(22);
         plastic.setStyle(Paint.Style.FILL);
-        plastic.setColor(shape == trigger ? 0xffeae8e7 : 0xffd4d1d4);
+        plastic.setColor(Rp6Palette.blend(palette.shell, Color.GRAY, .55f));
+        canvas.drawRoundRect(left + dp(1), y, left + width - dp(1), y + dp(24),
+                dp(12), dp(12), plastic);
+        plastic.setColor(palette.shell);
+        canvas.drawRoundRect(left + dp(2), y + dp(1), left + width - dp(2), y + dp(20),
+                dp(10), dp(10), plastic);
+        plastic.setColor(Rp6Palette.blend(palette.shell, palette.trim, .50f));
+        canvas.drawRoundRect(left + width * .55f, y + dp(6), left + width * .69f, y + dp(12),
+                dp(3), dp(3), plastic);
+        canvas.drawRoundRect(left + width * .72f, y + dp(6), left + width * .78f, y + dp(12),
+                dp(3), dp(3), plastic);
+    }
+
+    private void drawShoulder(Canvas canvas, Path shape, float center, float top,
+                              float width, float height, boolean mirror) {
+        canvas.save();
+        canvas.translate(center + width * (mirror ? 0.5f : -0.5f), top);
+        canvas.scale((mirror ? -width : width) / 28, height / 28);
+        plastic.setStyle(Paint.Style.FILL);
+        plastic.setColor(shape == trigger ? palette.trigger : palette.bumper);
         canvas.drawPath(shape, plastic);
         plastic.setStyle(Paint.Style.STROKE);
         plastic.setStrokeWidth(1);
-        plastic.setColor(0xff87838d);
+        plastic.setColor(Rp6Palette.blend(palette.shell, Color.GRAY, .60f));
         canvas.drawPath(shape, plastic);
         canvas.restore();
     }
@@ -194,7 +202,7 @@ final class RemapDiagram extends LinearLayout {
             case KeyEvent.KEYCODE_DPAD_LEFT: return new float[]{129, 322};
             case KeyEvent.KEYCODE_DPAD_RIGHT: return new float[]{177, 322};
             case KeyEvent.KEYCODE_BUTTON_SELECT: return new float[]{184, 178};
-            case KeyEvent.KEYCODE_BUTTON_START: return new float[]{678, 178};
+            case KeyEvent.KEYCODE_BUTTON_START: return new float[]{678, 180};
             case KeyEvent.KEYCODE_HOME: return new float[]{180, 381};
             case KeyEvent.KEYCODE_BACK: return new float[]{681, 383};
             default: return null;

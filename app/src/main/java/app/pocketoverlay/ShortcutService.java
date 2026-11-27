@@ -1,6 +1,9 @@
 package app.pocketoverlay;
 
 import android.accessibilityservice.AccessibilityService;
+import android.app.KeyguardManager;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.graphics.PixelFormat;
 import android.media.AudioManager;
@@ -8,6 +11,7 @@ import android.os.BatteryManager;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.text.format.DateFormat;
 import android.util.DisplayMetrics;
@@ -30,6 +34,20 @@ public final class ShortcutService extends AccessibilityService {
     private static final int BRIGHTNESS_STEPS = 20;
     private static final int VOLUME = AudioManager.STREAM_MUSIC;
 
+    private OverlayView.ChargeSpeed readChargeSpeed() {
+        if (!settings.getBoolean(OverlaySettings.OVERLAY_CHARGING_INDICATOR, true) || !battery.isCharging()) {
+            nextChargeSpeedRead = 0;
+            return OverlayView.ChargeSpeed.OFF;
+        }
+        long now = SystemClock.uptimeMillis();
+        if (now >= nextChargeSpeedRead) {
+            Intent state = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            chargeSpeed = OverlayView.ChargeSpeed.fromWatts(PerformanceReadings.batteryWatts(battery, state));
+            nextChargeSpeedRead = now + 1000;
+        }
+        return chargeSpeed;
+    }
+
     private static final class PressedKey {
         final int device;
         final int key;
@@ -49,9 +67,17 @@ public final class ShortcutService extends AccessibilityService {
     private AudioManager audio;
     private WindowManager windows;
     private BatteryManager battery;
+    private long nextChargeSpeedRead;
+    private OverlayView.ChargeSpeed chargeSpeed = OverlayView.ChargeSpeed.OFF;
     private PowerManager power;
+    private KeyguardManager keyguard;
+    private KeyEvent controllerHomePress;
     private SharedPreferences settings;
     private PerformanceOverlay performanceOverlay;
+    private PerformanceProfiles performanceProfiles;
+    private final SharedPreferences.OnSharedPreferenceChangeListener profileChanges = (preferences, key) -> {
+        if (PerformanceProfiles.isProfileKey(key)) performanceProfiles.profilesChanged();
+    };
     private NavigationShortcuts navigation;
     private ControllerRemap controllerRemap;
     private FrameLayout overlayWindow;
@@ -64,7 +90,13 @@ public final class ShortcutService extends AccessibilityService {
         windows = getSystemService(WindowManager.class);
         battery = getSystemService(BatteryManager.class);
         power = getSystemService(PowerManager.class);
+        keyguard = getSystemService(KeyguardManager.class);
         settings = OverlaySettings.open(this);
+        if (performanceProfiles == null) {
+            performanceProfiles = new PerformanceProfiles(this, settings);
+            settings.registerOnSharedPreferenceChangeListener(profileChanges);
+            performanceProfiles.refresh();
+        }
         if (controllerRemap == null) controllerRemap = ControllerRemap.acquire(this, settings);
         if (navigation != null) {
             navigation.clear();
@@ -79,6 +111,7 @@ public final class ShortcutService extends AccessibilityService {
     @Override
     protected boolean onKeyEvent(KeyEvent event) {
         if (GamepadTestView.captureKey(event)) return true;
+        if (handleControllerHome(event)) return true;
         PressedKey existing = findPressed(event);
         if (existing == null && navigation != null) {
             if (navigation.onKeyEvent(event)) {
@@ -255,7 +288,7 @@ public final class ShortcutService extends AccessibilityService {
             panel.animate().cancel();
         }
         panel.applyTheme(settings.getInt(OverlaySettings.THEME, OverlaySettings.DARK));
-        panel.update(brightness, level, segments, time, batteryPercent, battery.isCharging(), settings);
+        panel.update(brightness, level, segments, time, batteryPercent, readChargeSpeed(), settings);
 
         DisplayMetrics metrics = getResources().getDisplayMetrics();
         float scale = (float) metrics.densityDpi / OverlayView.REFERENCE_DENSITY_DPI;
@@ -324,11 +357,38 @@ public final class ShortcutService extends AccessibilityService {
         }
     }
 
+    private boolean handleControllerHome(KeyEvent event) {
+        if (settings == null) return false;
+        boolean available = power.isInteractive() && !keyguard.isKeyguardLocked()
+                && !OverlaySettings.recordingButton;
+        if (controllerHomePress != null && event.getDeviceId() == controllerHomePress.getDeviceId()
+                && event.getKeyCode() == controllerHomePress.getKeyCode()
+                && event.getScanCode() == controllerHomePress.getScanCode()) {
+            if (event.getAction() == KeyEvent.ACTION_UP) {
+                controllerHomePress = null;
+                if (available && !event.isCanceled() && ControllerHomeShortcut.matches(settings, event)) {
+                    performGlobalAction(GLOBAL_ACTION_HOME);
+                }
+                return true;
+            }
+            if (event.getRepeatCount() > 0) return true;
+            controllerHomePress = null;
+        }
+        if (!available || event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() != 0
+                || !ControllerHomeShortcut.matches(settings, event)) return false;
+        controllerHomePress = new KeyEvent(event);
+        return true;
+    }
+
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         if (navigation != null && event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
                 && event.getContentChangeTypes() == AccessibilityEvent.CONTENT_CHANGE_TYPE_UNDEFINED) {
             navigation.onWindowChanged(event.getPackageName(), event.getClassName());
+        }
+        if (performanceProfiles != null
+                && event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            performanceProfiles.refresh();
         }
     }
 
@@ -336,6 +396,7 @@ public final class ShortcutService extends AccessibilityService {
     public void onInterrupt() {
         handler.removeCallbacksAndMessages(null);
         pressed.clear();
+        controllerHomePress = null;
         if (navigation != null) {
             navigation.clear();
         }
@@ -344,6 +405,10 @@ public final class ShortcutService extends AccessibilityService {
 
     @Override
     public void onDestroy() {
+        if (performanceProfiles != null) {
+            settings.unregisterOnSharedPreferenceChangeListener(profileChanges);
+            performanceProfiles.close();
+        }
         if (controllerRemap != null) {
             controllerRemap.release();
             controllerRemap = null;

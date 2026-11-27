@@ -22,12 +22,19 @@
     <string name="navigation_back">Back</string>
     <string name="navigation_recents">Recent apps</string>
     <string name="navigation_menu">Quick actions</string>
+    <string name="navigation_quick_group_hud">Performance HUD</string>
+    <string name="navigation_quick_folder_hud">HUD</string>
+    <string name="navigation_quick_folder_device">Device</string>
+    <string name="navigation_quick_folder_tools">Tools</string>
+    <string name="navigation_quick_group_device">Device controls</string>
+    <string name="navigation_quick_group_tools">System tools</string>
     <string name="navigation_quick_mute">Toggle mute</string>
     <string name="navigation_quick_hud">Toggle HUD</string>
     <string name="navigation_quick_pin">Pin HUD</string>
     <string name="navigation_quick_unpin">Unpin HUD</string>
     <string name="navigation_quick_cycle">Cycle HUD layout</string>
-    <string name="navigation_quick_hint">Press a shortcut button or tap an action. B closes the panel.</string>
+    <string name="navigation_quick_close">Close</string>
+    <string name="navigation_quick_folder_description">%1$s, %2$s button</string>
     <string name="navigation_key_a">A</string>
     <string name="navigation_key_b">B</string>
     <string name="navigation_key_x">X</string>
@@ -36,6 +43,14 @@
     <string name="navigation_key_r2">R2</string>
     <string name="navigation_key_l1">L1</string>
     <string name="navigation_key_l2">L2</string>
+    <string name="navigation_quick_on">On</string>
+    <string name="navigation_quick_pinned">Pinned</string>
+    <string name="navigation_quick_movable">Movable</string>
+    <string name="navigation_quick_muted">Muted</string>
+    <string name="navigation_quick_unmuted">Unmuted</string>
+    <string name="navigation_mode_unknown">Unavailable</string>
+    <string name="navigation_edit_fan_curve">Edit fan curve</string>
+    <string name="navigation_fan_curve_unavailable">Retroid’s fan curve editor is unavailable.</string>
     <string name="navigation_fan_mode">Fan mode</string>
     <string name="navigation_performance_mode">Perf mode</string>
     <string name="navigation_fan_off">Off</string>
@@ -91,8 +106,8 @@
     <string name="navigation_previous">Previous</string>
     <string name="navigation_next">Next</string>
     <string name="navigation_back_to_launcher">Back to launcher</string>
-    <string name="navigation_open_app">Open app</string>
-    <string name="navigation_dismiss_app">Close app</string>
+    <string name="navigation_open_app">Open</string>
+    <string name="navigation_dismiss_app">Close</string>
     <string name="navigation_clear_all">Clear all</string>
     <string name="navigation_clear_all_unavailable">Clear all is available in Retroid’s landscape Recent apps screen.</string>
     <string name="navigation_screenshot">Screenshot</string>
@@ -118,13 +133,16 @@
     <string-array name="performance_fan_formats">
         <item>Percentage Only</item>
         <item>RPM</item>
-        <item>Percentage / RPM</item>
+        <item>Percentage and RPM</item>
     </string-array>
-    <string name="performance_fan_combined">%1$s / %2$s</string>
+    <string name="performance_fan_combined">%1$s %2$s</string>
     <string name="performance_rpm">%1$d RPM</string>
     <string name="performance_ram_used_gib">%1$.1f GiB</string>
     <string name="performance_ram_gib">%1$.1f / %2$.1f GiB</string>
     <string name="performance_default">Reset to default</string>
+    <string name="performance_battery_fields">Battery readings</string>
+    <string name="performance_battery_level">Charge level</string>
+    <string name="performance_fps_graph">Show FPS history graph</string>
     <string name="performance_live_status">Live status</string>
     <string name="performance_background">Background</string>
     <string name="performance_opacity">Background opacity</string>
@@ -172,7 +190,7 @@
     <string name="performance_percent">%1$d%%</string>
     <string name="metric_battery_time">Battery time</string>
     <string name="metric_fan">Fan speed</string>
-    <string name="performance_batt">Batt</string>
+    <string name="performance_batt">BAT</string>
     <string name="performance_fan">FAN</string>
     <string name="performance_charge_time">~%1$dh %2$02dm to full</string>
     <string name="performance_battery_full">Full</string>
@@ -237,6 +255,7 @@
         <item>Top right</item>
         <item>Bottom left</item>
         <item>Bottom right</item>
+        <item>Top center</item>
     </string-array>
     <string-array name="app_themes">
         <item>Dark</item>
@@ -261,9 +280,17 @@
     <string name="about_compatibility">Requires Android 9 or later. Retroid Pocket 6 firmware provides additional lighting, navigation, and hardware controls.</string>
     <string name="about_license">Open source under the MIT License. Maintained by linxlone666.</string>
     <string name="about_version">Installed version %1$s</string>
-    <string name="sidebar_version">v%1$s</string>
+
     <string name="about_source">Source code</string>
     <string name="about_releases">Release notes</string>
+    <string name="about_github_releases">GitHub releases</string>
+    <string name="about_build_notes">Changes in this build</string>
+    <string name="about_build_changes">• Added Pocket Keyboard, per-app fan and performance modes, and a recordable controller Home shortcut.\n• Added the Color page, Top grid HUD, an FPS history graph, and named HUD and remap presets.\n• Updated Quick actions, Recents navigation, and RP6 button artwork.\n• Added configurable battery readings and charging-speed indicators.</string>
+    <string name="about_load_published_notes">Latest GitHub notes</string>
+    <string name="about_published_tag">Published release %1$s</string>
+    <string name="about_notes_loading">Loading release notes…</string>
+    <string name="about_notes_failed">Couldn’t load release notes. Try again or open GitHub releases.</string>
+    <string name="about_notes_empty">This release has no published notes.</string>
     <string name="about_issues">Report an issue</string>
     <string name="about_no_browser">No app can open this GitHub link.</string>
     <string name="updates_section">App updates</string>
@@ -272,8 +299,7 @@
     <string name="update_checking">Checking GitHub…</string>
     <string name="update_current">You’re up to date.</string>
     <string name="update_available">Version %1$s is available.</string>
-    <string name="update_download">Download and install update</string>
-    <string name="update_install">Install downloaded update</string>
+    <string name="update_install">Install update</string>
     <string name="update_downloading">Downloading and verifying the APK…</string>
     <string name="update_ready">Version %1$s is ready to install.</string>
     <string name="update_check_failed">Couldn’t check for updates. Try again or open Release notes.</string>
@@ -282,9 +308,9 @@
     <string name="update_install_permission">Install app updates</string>
     <string name="update_install_detail">Optional. Lets Pocket Plus hand downloaded updates to the Android installer.</string>
     <string name="update_install_allow">Open install settings</string>
-    <string name="update_install_prompt">Allow installs from Pocket Plus in Android settings. Then return here and tap Download and install update again.</string>
+    <string name="update_install_prompt">Allow installs from Pocket Plus in Android settings. Then return here and tap Install update again.</string>
     <string name="remap_page">Button Remap</string>
-    <string name="remap_rear_view">Rear view</string>
+    <string name="remap_rear_view">Rear buttons · M1 and M2</string>
     <string name="remap_rear_description">Back of the Retroid Pocket 6 showing the M1 and M2 buttons</string>
     <string name="remap_hint">Tap a button box to choose the input it sends across apps.</string>
     <string name="remap_color">Console color</string>
@@ -295,6 +321,8 @@
         <item>Orange</item>
         <item>Light Purple</item>
     </string-array>
+    <string name="remap_swapped_caps">Swapped face button caps</string>
+    <string name="remap_swapped_caps_hint">Show A/B and X/Y in their swapped positions. Set the output for each button in the diagram.</string>
     <string name="remap_swap_faces">Swap A/B and X/Y globally</string>
     <string name="remap_swap_hint">Custom button outputs override this swap. Enable Controller shortcuts in Settings to restore mappings after restarting. L2/R2 mappings control digital presses.</string>
     <string name="remap_swap_connecting">Connecting to Retroid button mapping…</string>
@@ -312,4 +340,71 @@
     <string name="remap_gamepad_hint">Press buttons or move the sticks and triggers to see what Android receives.</string>
     <string name="remap_test_last">Last button: %1$s</string>
     <string name="remap_test_sticks">Left stick X %1$d · Y %2$d     Right stick X %3$d · Y %4$d</string>
+    <string name="controller_home_title">Controller button → Home</string>
+    <string name="controller_home_assignment">%1$s · %2$s</string>
+    <string name="controller_home_record">Press and release the Home or Guide button on your controller. You can choose another controller button if Android reserves Guide.</string>
+    <string name="controller_home_clear">Clear binding</string>
+    <string name="controller_guide">Guide</string>
+    <string name="keyboard_name">Pocket Keyboard</string>
+    <string name="keyboard_setup">Enable Pocket Keyboard in Android, choose it, then try typing below. Use D-pad and A to type. L1 once shifts the next key, twice locks Shift, and a third press turns it off. L2 switches numbers and symbols, R1 switches languages, B deletes, X closes, Y inserts a space, and Start submits.</string>
+    <string name="keyboard_enable">Enable keyboard</string>
+    <string name="keyboard_choose">Choose keyboard</string>
+    <string name="keyboard_try">Try the keyboard</string>
+    <string name="keyboard_shift">Shift</string>
+    <string name="keyboard_shift_once">Shift for the next key</string>
+    <string name="keyboard_shift_locked">Shift locked</string>
+    <string name="keyboard_symbols">Letters and symbols</string>
+    <string name="keyboard_language">Switch Thai and English</string>
+    <string name="keyboard_space">Space</string>
+    <string name="keyboard_delete">Delete</string>
+    <string name="keyboard_enter">Enter</string>
+    <string name="keyboard_hide">Hide keyboard</string>
+    <string name="perf_mode_page">Perf Mode</string>
+    <string name="perf_mode_description">Set performance and fan modes for individual apps. Pocket Plus restores your previous settings when you leave.</string>
+    <string name="perf_mode_add">+ Add application</string>
+    <string name="perf_mode_no_profiles">No app profiles yet</string>
+    <string name="perf_mode_no_apps">Every launchable app already has a profile.</string>
+    <string name="perf_mode_remove">Remove</string>
+    <string name="perf_mode_system">System</string>
+    <string name="perf_mode_performance">Performance</string>
+    <string name="perf_mode_fan">Fan</string>
+    <string name="perf_mode_permission">Enable Controller shortcuts and Allow brightness changes in Settings for automatic mode switching.</string>
+    <string name="performance_usage">Usage</string>
+    <string name="performance_temperature">Temperature</string>
+    <string name="performance_component_values">%1$s\u2003%2$s</string>
+    <string name="color_page">Color</string>
+    <string name="color_intro">Adjust display colors across apps and games.</string>
+    <string name="color_unavailable">Display color controls are available on stock Retroid Pocket 6 firmware.</string>
+    <string name="color_saturation">Saturation</string>
+    <string name="color_temperature">Color temperature</string>
+    <string name="color_cool">Cool</string>
+    <string name="color_warm">Warm</string>
+    <string name="color_neutral">Neutral</string>
+    <string name="color_cool_amount">%1$d%% cooler</string>
+    <string name="color_warm_amount">%1$d%% warmer</string>
+    <string name="color_percent">%1$d%%</string>
+    <string name="color_preview">Color preview</string>
+    <string name="color_restore">Restore defaults</string>
+    <string name="color_filter_active">Turn off Android’s active color filter before adjusting temperature.</string>
+    <string name="color_apply_failed">The firmware didn’t accept the display adjustment.</string>
+    <string name="color_applied">Display colors applied</string>
+    <string name="performance_top_grid">Top grid</string>
+    <string name="remap_presets">Controller presets</string>
+    <string name="preset_save_named">Save preset</string>
+    <string name="preset_save_new">Save as new</string>
+    <string name="preset_update_target">Update %1$s</string>
+    <string name="preset_update">Update preset</string>
+    <string name="preset_update_confirm">Save your current settings over “%1$s”?</string>
+    <string name="preset_update_failed">Couldn’t update this preset.</string>
+    <string name="preset_choose_hint">Choose preset</string>
+    <string name="preset_none">No saved presets</string>
+    <string name="preset_name_hint">Preset name</string>
+    <string name="preset_name_duplicate">This name is already in use.</string>
+    <string name="preset_save">Save</string>
+    <string name="preset_saved">Preset saved</string>
+    <string name="preset_delete">Delete preset</string>
+    <string name="preset_rename">Rename preset</string>
+    <string name="preset_rename_action">Rename</string>
+    <string name="preset_renamed">Preset renamed</string>
+    <string name="preset_apply_failed">Couldn’t apply this preset.</string>
 </resources>

@@ -3,10 +3,12 @@ package app.pocketoverlay;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
+import android.provider.Settings;
 import android.view.KeyEvent;
 
 final class OverlaySettings {
     static final String REMAP_COLOR = "remap_color";
+    static final String REMAP_SWAPPED_CAPS = "remap_swapped_caps";
     static final String SIZE = "size_percent";
     private static final String LEGACY_MODIFIER = "modifier_key";
     static final String OVERLAY_BATTERY_PERCENT = "volume_battery_percent";
@@ -23,6 +25,8 @@ final class OverlaySettings {
     static final String THEME = "theme";
     static final String UI_MOTION = "ui_motion";
     static final String PERFORMANCE_ENABLED = "performance_enabled";
+    private static final String PERFORMANCE_BOOT_COUNT = "performance_boot_count";
+    private static boolean performanceBootChecked;
     static final String PERFORMANCE_POSITION = "performance_position";
     static final String PERFORMANCE_FAN_FORMAT = "performance_fan_format";
     private static final String LEGACY_FAN_RPM = "performance_fan_rpm";
@@ -47,8 +51,12 @@ final class OverlaySettings {
     static final int PERFORMANCE_INLINE = 0;
     static final int PERFORMANCE_LIST = 1;
     static final int PERFORMANCE_FULL_LIST = 2;
+    static final int PERFORMANCE_TOP_GRID = 3;
     static final String PERFORMANCE_METRICS = "performance_metrics";
+    static final String PERFORMANCE_BATTERY_FIELDS = "performance_battery_fields";
+    static final String PERFORMANCE_FPS_GRAPH = "performance_fps_graph";
     static final int PERFORMANCE_DEFAULT_POSITION = 3;
+    static final int PERFORMANCE_TOP_CENTER = 4;
     static final int DARK = 0;
     static final int LIGHT = 1;
     static final int MATERIAL_YOU = 2;
@@ -138,13 +146,21 @@ final class OverlaySettings {
 
     private OverlaySettings() {}
 
-    static SharedPreferences open(Context context) {
-        return context.getSharedPreferences("overlay_settings", Context.MODE_PRIVATE);
+    static synchronized SharedPreferences open(Context context) {
+        SharedPreferences settings = context.getSharedPreferences("overlay_settings", Context.MODE_PRIVATE);
+        if (!performanceBootChecked) {
+            int boot = Settings.Global.getInt(context.getContentResolver(), Settings.Global.BOOT_COUNT, -1);
+            if (boot >= 0 && settings.getInt(PERFORMANCE_BOOT_COUNT, -1) != boot) {
+                settings.edit().putInt(PERFORMANCE_BOOT_COUNT, boot).remove(PERFORMANCE_ENABLED).apply();
+            }
+            performanceBootChecked = true;
+        }
+        return settings;
     }
 
     static void cyclePerformanceLayout(SharedPreferences settings) {
         int layout = settings.getInt(PERFORMANCE_LAYOUT, PERFORMANCE_LIST);
-        int next = (layout + 1) % (PERFORMANCE_FULL_LIST + 1);
+        int next = (layout + 1) % (PERFORMANCE_TOP_GRID + 1);
         settings.edit().putInt(PERFORMANCE_LAYOUT, next).apply();
     }
 

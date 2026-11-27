@@ -22,6 +22,7 @@ import android.provider.Settings;
 import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.ViewConfiguration;
 import android.view.WindowInsets;
 import android.view.WindowManager;
@@ -84,6 +85,8 @@ final class NavigationShortcuts {
     private boolean recentsPanel;
     private boolean recentsPanelPending;
     private RetroidModePicker modePicker;
+    private QuickFolder quickFolder;
+    private Runnable[] quickOptionActions;
     private StickLighting lighting;
     private boolean lightingOpen;
     private boolean applyingMode;
@@ -95,8 +98,32 @@ final class NavigationShortcuts {
     private boolean openingRecent;
     private Object clusterTuneRequest;
     private long recentGestureEndedAt;
+    private long recentOverviewReadyAt;
+    private long recentTouchReadyAt;
+    private boolean browsingRecent;
+    private boolean lastRecentGestureWasBrowse;
+    private boolean retriedRecentBrowse;
     private final ArrayDeque<RecentInput> recentInputs = new ArrayDeque<>();
     private final Runnable processRecentInputs = this::processRecentInputs;
+
+    private enum QuickFolder {
+        HUD(R.string.navigation_quick_group_hud, R.string.navigation_quick_folder_hud,
+                R.drawable.ic_nav_performance),
+        DEVICE(R.string.navigation_quick_group_device, R.string.navigation_quick_folder_device,
+                R.drawable.ic_nav_adjust),
+        TOOLS(R.string.navigation_quick_group_tools, R.string.navigation_quick_folder_tools,
+                R.drawable.ic_settings);
+
+        final int title;
+        final int folderLabel;
+        final int icon;
+
+        QuickFolder(int title, int folderLabel, int icon) {
+            this.title = title;
+            this.folderLabel = folderLabel;
+            this.icon = icon;
+        }
+    }
 
     private enum RecentInput { PREVIOUS, NEXT, OPEN, DISMISS, CLEAR_ALL }
 
@@ -182,7 +209,7 @@ final class NavigationShortcuts {
             consumedPanelKeys.add(key);
             return true;
         }
-        if (panel != null && handlePanelKey(event, isHome, isBack)) {
+        if ((panel != null || recentsPanelPending) && handlePanelKey(event, isHome, isBack)) {
             consumedPanelKeys.add(key);
             return true;
         }
@@ -375,33 +402,103 @@ final class NavigationShortcuts {
     }
 
     private void showQuickActions() {
-        NavigationPanel quick = quickPanel(R.string.navigation_menu, R.string.navigation_quick_hint);
+        quickFolder = null;
         modePicker = null;
-        boolean pinned = settings.getBoolean(OverlaySettings.PERFORMANCE_LOCKED, false);
-        quick.addActionRow(new int[]{R.string.navigation_key_x, R.string.navigation_key_a, R.string.navigation_key_l1},
-                new int[]{R.string.navigation_quick_hud,
-                        pinned ? R.string.navigation_quick_unpin : R.string.navigation_quick_pin,
-                        R.string.navigation_quick_cycle},
-                new Runnable[]{() -> selectQuick(Action.PERFORMANCE), this::toggleHudPin,
-                        () -> selectQuick(Action.CYCLE_LAYOUT)});
-        quick.addActionRow(new int[]{R.string.navigation_key_start, R.string.navigation_key_l2, R.string.navigation_key_r2},
-                new int[]{R.string.navigation_fan_mode, R.string.navigation_performance_mode, R.string.navigation_quick_settings},
-                new Runnable[]{() -> showModePicker(RetroidModePicker.FAN),
-                        () -> showModePicker(RetroidModePicker.PERFORMANCE), () -> selectQuick(Action.QUICK_SETTINGS)});
-        quick.addActionRow(new int[]{R.string.navigation_key_r1, R.string.navigation_key_y, R.string.navigation_key_select},
-                new int[]{R.string.navigation_screenshot, R.string.navigation_quick_mute, R.string.navigation_stick_lighting},
-                new Runnable[]{() -> selectQuick(Action.SCREENSHOT), () -> selectQuick(Action.MUTE), this::showStickLighting});
+        NavigationPanel quick = quickPanel(R.string.navigation_menu);
+        QuickFolder[] folders = QuickFolder.values();
+        int[] labels = new int[folders.length];
+        int[] icons = new int[folders.length];
+        quickOptionActions = new Runnable[folders.length];
+        for (int i = 0; i < folders.length; i++) {
+            QuickFolder folder = folders[i];
+            labels[i] = folder.folderLabel;
+            icons[i] = folder.icon;
+            quickOptionActions[i] = () -> showQuickFolder(folder);
+        }
+        quick.setBackAction(R.string.navigation_quick_close, this::closePanel);
+        quick.addFolderRow(ACTION_KEY_LABELS, labels, icons, quickOptionActions);
         presentQuickPanel(quick);
         quick.requestFocus();
     }
 
-    private NavigationPanel quickPanel(int title, int detail) {
+    private void showQuickFolder(QuickFolder folder) {
+        quickFolder = folder;
+        modePicker = null;
+        NavigationPanel quick = quickPanel(folder.title);
+        quick.setBackAction(R.string.navigation_back, this::showQuickActions);
+        int[] labels;
+        int[] statuses;
+        switch (folder) {
+            case HUD:
+                boolean pinned = settings.getBoolean(OverlaySettings.PERFORMANCE_LOCKED, false);
+                labels = new int[]{R.string.navigation_quick_hud,
+                        pinned ? R.string.navigation_quick_unpin : R.string.navigation_quick_pin,
+                        R.string.navigation_quick_cycle};
+                statuses = new int[]{onOffLabel(settings.getBoolean(OverlaySettings.PERFORMANCE_ENABLED, false)),
+                        pinned ? R.string.navigation_quick_pinned : R.string.navigation_quick_movable,
+                        currentHudLayoutLabel()};
+                quickOptionActions = new Runnable[]{() -> selectQuick(Action.PERFORMANCE), this::toggleHudPin,
+                        () -> selectQuick(Action.CYCLE_LAYOUT)};
+                break;
+            case DEVICE:
+                labels = new int[]{R.string.navigation_fan_mode, R.string.navigation_performance_mode,
+                        R.string.navigation_stick_lighting};
+                if (lighting != null) lighting.refreshSettings();
+                statuses = new int[]{currentModeLabel(RetroidModePicker.FAN),
+                        currentModeLabel(RetroidModePicker.PERFORMANCE),
+                        lighting == null ? 0 : onOffLabel(lighting.isOn())};
+                quickOptionActions = new Runnable[]{() -> showModePicker(RetroidModePicker.FAN),
+                        () -> showModePicker(RetroidModePicker.PERFORMANCE), this::showStickLighting};
+                break;
+            case TOOLS:
+                labels = new int[]{R.string.navigation_screenshot, R.string.navigation_quick_mute,
+                        R.string.navigation_quick_settings};
+                AudioManager audio = service.getSystemService(AudioManager.class);
+                statuses = new int[]{0, audio.isStreamMute(AudioManager.STREAM_MUSIC)
+                        ? R.string.navigation_quick_muted : R.string.navigation_quick_unmuted, 0};
+                quickOptionActions = new Runnable[]{() -> selectQuick(Action.SCREENSHOT),
+                        () -> selectQuick(Action.MUTE), () -> selectQuick(Action.QUICK_SETTINGS)};
+                break;
+            default:
+                throw new AssertionError(folder);
+        }
+        quick.addStatusChoiceRow(ACTION_KEY_LABELS, labels, statuses, quickOptionActions);
+        presentQuickPanel(quick);
+        quick.requestFocus();
+    }
+
+    private int onOffLabel(boolean on) {
+        return on ? R.string.navigation_quick_on : R.string.navigation_fan_off;
+    }
+
+    private int currentHudLayoutLabel() {
+        switch (settings.getInt(OverlaySettings.PERFORMANCE_LAYOUT, OverlaySettings.PERFORMANCE_LIST)) {
+            case OverlaySettings.PERFORMANCE_INLINE: return R.string.performance_inline;
+            case OverlaySettings.PERFORMANCE_FULL_LIST: return R.string.performance_full_list;
+            case OverlaySettings.PERFORMANCE_TOP_GRID: return R.string.performance_top_grid;
+            default: return R.string.performance_list;
+        }
+    }
+
+    private int currentMode(RetroidModePicker picker) {
+        return Settings.System.getInt(service.getContentResolver(), picker.setting, -1);
+    }
+
+    private int currentModeLabel(RetroidModePicker picker) {
+        int value = currentMode(picker);
+        for (int i = 0; i < picker.values.length; i++) {
+            if (picker.values[i] == value) return picker.labels[i];
+        }
+        return R.string.navigation_mode_unknown;
+    }
+
+    private NavigationPanel quickPanel(int title) {
         lightingOpen = false;
         fanSpeedSlider = null;
         if (panel == null) {
-            return new NavigationPanel(service, settings, title, detail);
+            return new NavigationPanel(service, settings, title, 0, true);
         }
-        panel.setContent(title, detail);
+        panel.setContent(title, 0);
         return panel;
     }
 
@@ -410,46 +507,47 @@ final class NavigationShortcuts {
             content.setControls(this::closeOnOutsideTouch, null);
             showPanel(content, false);
         } else {
+            WindowManager.LayoutParams layout = (WindowManager.LayoutParams) content.getLayoutParams();
+            int width = panelWidth(false);
+            if (layout.width != width) {
+                layout.width = width;
+                windows.updateViewLayout(content, layout);
+            }
             content.animateContentChange();
         }
     }
 
-    private static final int[] MODE_KEYS = {KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_X,
+    private static final int[] ACTION_KEYS = {KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_X,
             KeyEvent.KEYCODE_BUTTON_Y, KeyEvent.KEYCODE_BUTTON_L1, KeyEvent.KEYCODE_BUTTON_R1};
-    private static final int[] MODE_KEY_LABELS = {R.string.navigation_key_a, R.string.navigation_key_x,
+    private static final int[] ACTION_KEY_LABELS = {R.string.navigation_key_a, R.string.navigation_key_x,
             R.string.navigation_key_y, R.string.navigation_key_l1, R.string.navigation_key_r1};
 
     private static final int CUSTOM_FAN_MODE = 6;
+    private static final int SMART_FAN_MODE = 4;
+    private static final String FAN_CURVE_ACTION = "action_fan_temp_control_curve_config";
     private static final String FAN_SPEED_SETTING = "fan_speed";
 
     private enum RetroidModePicker {
-        FAN("fan_mode", R.string.navigation_fan_mode,
-                new int[]{0, 1, 4, 5, CUSTOM_FAN_MODE},
-                new int[]{R.string.navigation_fan_off, R.string.navigation_fan_quiet,
-                        R.string.navigation_fan_smart, R.string.navigation_fan_sport,
-                        R.string.navigation_fan_custom}),
-        PERFORMANCE("performance_mode", R.string.navigation_performance_mode,
-                new int[]{0, 1, 2},
-                new int[]{R.string.navigation_performance_standard, R.string.navigation_performance_performance,
-                        R.string.navigation_performance_high});
+        FAN(R.string.navigation_fan_mode, PerformanceProfiles.Control.FAN),
+        PERFORMANCE(R.string.navigation_performance_mode, PerformanceProfiles.Control.PERFORMANCE);
 
         final String setting;
         final int title;
         final int[] values;
         final int[] labels;
 
-        RetroidModePicker(String setting, int title, int[] values, int[] labels) {
-            this.setting = setting;
+        RetroidModePicker(int title, PerformanceProfiles.Control control) {
+            this.setting = control.setting;
             this.title = title;
-            this.values = values;
-            this.labels = labels;
+            this.values = control.values;
+            this.labels = control.labels;
         }
     }
 
     private void toggleHudPin() {
         boolean pinned = settings.getBoolean(OverlaySettings.PERFORMANCE_LOCKED, false);
         settings.edit().putBoolean(OverlaySettings.PERFORMANCE_LOCKED, !pinned).apply();
-        showQuickActions();
+        showQuickFolder(QuickFolder.HUD);
     }
 
     private void showModePicker(RetroidModePicker picker) {
@@ -457,14 +555,13 @@ final class NavigationShortcuts {
             Toast.makeText(service, R.string.navigation_mode_unavailable, Toast.LENGTH_SHORT).show();
             return;
         }
-        int current = Settings.System.getInt(service.getContentResolver(), picker.setting, -1);
-        updateModePicker(picker, current);
+        updateModePicker(picker, currentMode(picker));
     }
 
     private void updateModePicker(RetroidModePicker picker, int current) {
         boolean customFan = picker == RetroidModePicker.FAN && current == CUSTOM_FAN_MODE;
-        NavigationPanel choices = quickPanel(picker.title, customFan
-                ? R.string.navigation_fan_custom_hint : R.string.navigation_mode_hint);
+        NavigationPanel choices = quickPanel(picker.title);
+        choices.setBackAction(R.string.navigation_back, this::returnFromQuickPicker);
         for (int start = 0; start < picker.values.length; start += 3) {
             int count = Math.min(3, picker.values.length - start);
             int[] keys = new int[count];
@@ -473,7 +570,7 @@ final class NavigationShortcuts {
             int selected = -1;
             for (int i = 0; i < count; i++) {
                 int index = start + i;
-                keys[i] = MODE_KEY_LABELS[index];
+                keys[i] = ACTION_KEY_LABELS[index];
                 labels[i] = picker.labels[index];
                 actions[i] = () -> selectMode(picker, index);
                 if (picker.values[index] == current) {
@@ -481,6 +578,10 @@ final class NavigationShortcuts {
                 }
             }
             choices.addChoiceRow(keys, labels, actions, selected);
+        }
+        if (picker == RetroidModePicker.FAN && current == SMART_FAN_MODE) {
+            choices.addChoiceRow(new int[]{R.string.navigation_key_start},
+                    new int[]{R.string.navigation_edit_fan_curve}, new Runnable[]{this::openSmartFanCurve}, -1);
         }
         if (customFan) {
             int speed = pendingFanSpeed >= 0 ? pendingFanSpeed : readFanSpeed();
@@ -493,6 +594,21 @@ final class NavigationShortcuts {
             fanSpeedSlider.requestFocus();
         } else {
             choices.focusCurrentChoice();
+        }
+    }
+
+    private void openSmartFanCurve() {
+        if (currentMode(RetroidModePicker.FAN) != SMART_FAN_MODE) {
+            showModePicker(RetroidModePicker.FAN);
+            return;
+        }
+        Intent editor = new Intent(FAN_CURVE_ACTION).setPackage("com.rp.settings")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            service.startActivity(editor);
+            closePanel();
+        } catch (ActivityNotFoundException | SecurityException ignored) {
+            Toast.makeText(service, R.string.navigation_fan_curve_unavailable, Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -513,7 +629,7 @@ final class NavigationShortcuts {
             handler.postDelayed(() -> {
                 applyingMode = false;
                 if (panel == source && modePicker == picker) {
-                    int current = Settings.System.getInt(service.getContentResolver(), picker.setting, -1);
+                    int current = currentMode(picker);
                     updateModePicker(picker, current);
                     if (current != value) {
                         Toast.makeText(service, R.string.navigation_mode_write_failed, Toast.LENGTH_SHORT).show();
@@ -567,15 +683,7 @@ final class NavigationShortcuts {
     }
 
     private void writeRetroidSetting(String setting, int value) {
-        try {
-            if (Settings.System.putInt(service.getContentResolver(), setting, value)) {
-                return;
-            }
-        } catch (SecurityException | IllegalArgumentException ignored) {
-            // Retroid's settings are private to the firmware on some builds.
-        }
-        // Setting names are fixed firmware keys and values are integers.
-        new RetroidFirmware().query("settings put system " + setting + " " + value);
+        new RetroidFirmware().writeSystemSetting(service, setting, value);
     }
 
     private void showStickLighting() {
@@ -583,12 +691,13 @@ final class NavigationShortcuts {
             Toast.makeText(service, R.string.navigation_mode_unavailable, Toast.LENGTH_SHORT).show();
             return;
         }
-        NavigationPanel lights = quickPanel(R.string.navigation_stick_lighting, R.string.navigation_lighting_hint);
+        NavigationPanel lights = quickPanel(R.string.navigation_stick_lighting);
         modePicker = null;
         if (lighting == null) lighting = StickLighting.acquire(service, settings, handler);
         lighting.refreshSettings();
         LightingColorWheel wheel = lighting.addControls(lights,
                 service.getResources().getConfiguration().screenWidthDp >= 560);
+        lights.setBackAction(R.string.navigation_back, this::returnFromQuickPicker);
         lightingOpen = true;
         presentQuickPanel(lights);
         wheel.requestFocus();
@@ -597,6 +706,7 @@ final class NavigationShortcuts {
     private void selectQuick(Action action) {
         if (action == Action.PERFORMANCE || action == Action.CYCLE_LAYOUT) {
             run(action);
+            showQuickFolder(QuickFolder.HUD);
             return;
         }
         closePanel();
@@ -614,29 +724,65 @@ final class NavigationShortcuts {
     private void openRecentsPanel() {
         recentsPanelPending = false;
         if (!ready() || panel != null) {
+            recentInputs.clear();
             return;
         }
-        NavigationPanel recent = new NavigationPanel(service, settings, R.string.navigation_recents, 0);
-        recent.setPadding(dp(12), dp(6), dp(12), dp(6));
-        recent.addActionRow(new int[]{R.string.navigation_key_left, R.string.navigation_key_right, R.string.navigation_key_a},
-                new int[]{R.string.navigation_previous, R.string.navigation_next, R.string.navigation_open_app},
-                new Runnable[]{() -> browseRecents(-1), () -> browseRecents(1), this::openCenteredRecent});
-        recent.addActionRow(new int[]{R.string.navigation_key_y, R.string.navigation_key_select, R.string.navigation_key_b},
-                new int[]{R.string.navigation_dismiss_app, R.string.navigation_clear_all, R.string.navigation_back_to_launcher},
-                new Runnable[]{this::dismissCenteredRecent, this::clearRecentApps, this::exitRecentsToHome});
+        NavigationPanel recent = new NavigationPanel(service, settings, R.string.navigation_recents, 0, true);
+        recent.setBackAction(R.string.navigation_home, this::exitRecentsToHome);
+        if (panelWidth(true) >= dp(430)) {
+            recent.addActionRow(new int[]{R.string.navigation_key_left, R.string.navigation_key_right,
+                            R.string.navigation_key_a, R.string.navigation_key_y, R.string.navigation_key_select},
+                    new int[]{R.string.navigation_previous, R.string.navigation_next, R.string.navigation_open_app,
+                            R.string.navigation_dismiss_app, R.string.navigation_clear_all},
+                    new Runnable[]{() -> queueRecentTouch(RecentInput.PREVIOUS), () -> queueRecentTouch(RecentInput.NEXT),
+                            () -> queueRecentTouch(RecentInput.OPEN),
+                            () -> queueRecentTouch(RecentInput.DISMISS), () -> queueRecentTouch(RecentInput.CLEAR_ALL)});
+        } else {
+            recent.addActionRow(new int[]{R.string.navigation_key_left, R.string.navigation_key_right,
+                            R.string.navigation_key_a},
+                    new int[]{R.string.navigation_previous, R.string.navigation_next, R.string.navigation_open_app},
+                    new Runnable[]{() -> queueRecentTouch(RecentInput.PREVIOUS), () -> queueRecentTouch(RecentInput.NEXT),
+                            () -> queueRecentTouch(RecentInput.OPEN)});
+            recent.addActionRow(new int[]{R.string.navigation_key_y, R.string.navigation_key_select},
+                    new int[]{R.string.navigation_dismiss_app, R.string.navigation_clear_all},
+                    new Runnable[]{() -> queueRecentTouch(RecentInput.DISMISS), () -> queueRecentTouch(RecentInput.CLEAR_ALL)});
+        }
         recent.setControls(this::closeOnOutsideTouch, this::browseRecents);
         showPanel(recent, true);
+        recentOverviewReadyAt = SystemClock.uptimeMillis() + 140;
+        processRecentInputs();
+    }
+
+    private void returnFromQuickPicker() {
+        if (quickFolder == null) showQuickActions();
+        else showQuickFolder(quickFolder);
+    }
+
+    private int panelWidth(boolean recents) {
+        int preferred = recents ? 448 : lightingOpen ? 485 : 410;
+        return Math.min(screenSize().x - dp(8) * 2, dp(preferred));
+    }
+
+    private boolean hasDpadAxis() {
+        for (int id : InputDevice.getDeviceIds()) {
+            InputDevice device = InputDevice.getDevice(id);
+            if (ControllerRemap.isBuiltInController(device)
+                    && device.getMotionRange(MotionEvent.AXIS_HAT_X, InputDevice.SOURCE_JOYSTICK) != null) {
+                // Android delivers D-pad axis motion to the focused window.
+                return true;
+            }
+        }
+        return false;
     }
 
     private void showPanel(NavigationPanel next, boolean recents) {
         int margin = dp(8);
-        int width = Math.min(screenSize().x - margin * 2, dp(recents ? 420 : 520));
+        int width = panelWidth(recents);
         WindowManager.LayoutParams layout = new WindowManager.LayoutParams(width,
                 WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT);
-        if (recents) {
-            // Keep Android Recents focused so the launcher gets focus when it closes.
+        if (recents && !hasDpadAxis()) {
             layout.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
         }
         layout.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
@@ -663,6 +809,11 @@ final class NavigationShortcuts {
         handler.removeCallbacks(processRecentInputs);
         recentInputs.clear();
         recentGestureEndedAt = 0;
+        recentOverviewReadyAt = 0;
+        recentTouchReadyAt = 0;
+        browsingRecent = false;
+        lastRecentGestureWasBrowse = false;
+        retriedRecentBrowse = false;
         openingRecent = false;
         if (panel != null) {
             windows.removeViewImmediate(panel);
@@ -670,6 +821,8 @@ final class NavigationShortcuts {
         }
         recentsPanel = false;
         modePicker = null;
+        quickFolder = null;
+        quickOptionActions = null;
         lightingOpen = false;
         fanSpeedSlider = null;
     }
@@ -681,9 +834,11 @@ final class NavigationShortcuts {
         }
         if (isBack || key == KeyEvent.KEYCODE_BUTTON_B || key == KeyEvent.KEYCODE_ESCAPE) {
             if (event.getRepeatCount() == 0) {
-                if (recentsPanel) {
+                if (recentsPanel || recentsPanelPending) {
                     exitRecentsToHome();
                 } else if (modePicker != null || lightingOpen) {
+                    returnFromQuickPicker();
+                } else if (quickFolder != null) {
                     showQuickActions();
                 } else {
                     closePanel();
@@ -692,12 +847,12 @@ final class NavigationShortcuts {
             return true;
         }
         if (isHome) {
-            if (recentsPanel && event.getRepeatCount() == 0) {
+            if ((recentsPanel || recentsPanelPending) && event.getRepeatCount() == 0) {
                 exitRecentsToHome();
             }
             return true;
         }
-        if (recentsPanel) {
+        if (recentsPanel || recentsPanelPending) {
             switch (key) {
                 case KeyEvent.KEYCODE_DPAD_LEFT:
                 case KeyEvent.KEYCODE_DPAD_RIGHT:
@@ -733,15 +888,14 @@ final class NavigationShortcuts {
             }
             return false;
         }
-        if (key == KeyEvent.KEYCODE_BUTTON_SELECT && modePicker == null) {
-            if (event.getRepeatCount() == 0) {
-                showStickLighting();
-            }
-            return true;
-        }
         if (modePicker != null) {
+            if (modePicker == RetroidModePicker.FAN && key == KeyEvent.KEYCODE_BUTTON_START
+                    && currentMode(modePicker) == SMART_FAN_MODE) {
+                if (event.getRepeatCount() == 0) openSmartFanCurve();
+                return true;
+            }
             for (int i = 0; i < modePicker.values.length; i++) {
-                if (key == MODE_KEYS[i]) {
+                if (key == ACTION_KEYS[i]) {
                     if (event.getRepeatCount() == 0) {
                         selectMode(modePicker, i);
                     }
@@ -756,32 +910,23 @@ final class NavigationShortcuts {
             }
             return false;
         }
-        if (key == KeyEvent.KEYCODE_BUTTON_A) {
+        if (quickOptionActions != null) {
+            for (int i = 0; i < quickOptionActions.length; i++) {
+                if (key == ACTION_KEYS[i]) {
+                    if (event.getRepeatCount() == 0) {
+                        quickOptionActions[i].run();
+                    }
+                    return true;
+                }
+            }
+        }
+        if (key == KeyEvent.KEYCODE_DPAD_CENTER || key == KeyEvent.KEYCODE_ENTER) {
             if (event.getRepeatCount() == 0) {
-                toggleHudPin();
+                panel.confirmChoice();
             }
             return true;
         }
-        if (key == KeyEvent.KEYCODE_BUTTON_START || key == KeyEvent.KEYCODE_BUTTON_L2) {
-            if (event.getRepeatCount() == 0) {
-                showModePicker(key == KeyEvent.KEYCODE_BUTTON_START
-                        ? RetroidModePicker.FAN : RetroidModePicker.PERFORMANCE);
-            }
-            return true;
-        }
-        Action action;
-        switch (key) {
-            case KeyEvent.KEYCODE_BUTTON_R1: action = Action.SCREENSHOT; break;
-            case KeyEvent.KEYCODE_BUTTON_Y: action = Action.MUTE; break;
-            case KeyEvent.KEYCODE_BUTTON_X: action = Action.PERFORMANCE; break;
-            case KeyEvent.KEYCODE_BUTTON_L1: action = Action.CYCLE_LAYOUT; break;
-            case KeyEvent.KEYCODE_BUTTON_R2: action = Action.QUICK_SETTINGS; break;
-            default: return false;
-        }
-        if (event.getRepeatCount() == 0) {
-            selectQuick(action);
-        }
-        return true;
+        return false;
     }
 
     private void exitRecentsToHome() {
@@ -807,8 +952,14 @@ final class NavigationShortcuts {
         queueRecentInput(direction < 0 ? RecentInput.PREVIOUS : RecentInput.NEXT);
     }
 
+    private void queueRecentTouch(RecentInput input) {
+        // Touching another button during an injected swipe can cancel it and steal that tap.
+        recentTouchReadyAt = SystemClock.uptimeMillis() + 180;
+        queueRecentInput(input);
+    }
+
     private void queueRecentInput(RecentInput input) {
-        if (recentsPanel && !openingRecent) {
+        if ((recentsPanel || recentsPanelPending) && !openingRecent) {
             recentInputs.addLast(input);
             processRecentInputs();
         }
@@ -821,19 +972,27 @@ final class NavigationShortcuts {
         }
         RecentInput input = recentInputs.peekFirst();
         boolean browse = input == RecentInput.PREVIOUS || input == RecentInput.NEXT;
-        // Quickstep can ignore a tap while its cards are still snapping into place.
-        long earliest = recentGestureEndedAt + (browse ? 420 : 760);
+        // Consecutive horizontal swipes can start as the previous card finishes snapping.
+        // Opening or closing a card still needs the full settling time.
+        long settle = browse ? (lastRecentGestureWasBrowse ? 185 : 420) : 760;
+        long earliest = Math.max(Math.max(recentOverviewReadyAt, recentTouchReadyAt),
+                recentGestureEndedAt + settle);
         if (SystemClock.uptimeMillis() < earliest) {
             handler.postAtTime(processRecentInputs, earliest);
             return;
         }
 
-        recentInputs.removeFirst();
-        boolean sent;
         if (browse) {
             float offset = input == RecentInput.PREVIOUS ? -.14f : .14f;
-            sent = gesture(.5f + offset, .48f, .5f - offset, .48f, 160);
-        } else if (input == RecentInput.DISMISS) {
+            browsingRecent = gesture(.5f + offset, .48f, .5f - offset, .48f, 160);
+            if (!browsingRecent) finishRecentBrowse(false);
+            return;
+        }
+
+        recentInputs.removeFirst();
+        lastRecentGestureWasBrowse = false;
+        boolean sent;
+        if (input == RecentInput.DISMISS) {
             sent = gesture(.5f, .48f, .5f, .1f, 200);
         } else if (input == RecentInput.CLEAR_ALL) {
             Point size = screenSize();
@@ -850,20 +1009,38 @@ final class NavigationShortcuts {
             sent = gesture(.5f, .48f, .502f, .48f, 85);
         }
         if (!sent) {
-            recentInputs.clear();
+            recentGestureEndedAt = SystemClock.uptimeMillis();
+            processRecentInputs();
         } else if (input == RecentInput.OPEN || input == RecentInput.CLEAR_ALL) {
             openingRecent = true;
             recentInputs.clear();
         }
     }
 
+    private void finishRecentBrowse(boolean completed) {
+        browsingRecent = false;
+        lastRecentGestureWasBrowse = completed;
+        // A touch can cancel the injected swipe. Retry that step once before advancing the queue.
+        if (completed || retriedRecentBrowse) {
+            recentInputs.removeFirst();
+            retriedRecentBrowse = false;
+        } else {
+            retriedRecentBrowse = true;
+        }
+        recentGestureEndedAt = SystemClock.uptimeMillis();
+        processRecentInputs();
+    }
+
     private void finishRecentGesture(NavigationPanel source, boolean completed) {
         sendingGesture = false;
         if (panel != source || !recentsPanel) {
             processRecentInputs();
+        } else if (browsingRecent) {
+            finishRecentBrowse(completed);
         } else if (!completed) {
             openingRecent = false;
-            recentInputs.clear();
+            recentGestureEndedAt = SystemClock.uptimeMillis();
+            processRecentInputs();
         } else if (openingRecent) {
             // Keep focus through Quickstep's launch animation.
             handler.postDelayed(() -> {

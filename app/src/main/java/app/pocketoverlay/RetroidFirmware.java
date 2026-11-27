@@ -1,16 +1,37 @@
 package app.pocketoverlay;
 
 import android.annotation.SuppressLint;
+import android.content.Context;
 import android.os.IBinder;
 import android.os.Parcel;
 import android.os.RemoteException;
+import android.provider.Settings;
 
 import java.nio.charset.StandardCharsets;
 
 /** Connection to the stock Retroid firmware service. */
 final class RetroidFirmware {
+    private static final String FOREGROUND =
+            "dumpsys -t 1 activity activities 2>/dev/null | awk "
+            + "'/topResumedActivity=ActivityRecord|mResumedActivity: ActivityRecord/ "
+            + "{for(i=1;i<=NF;i++) {token=$i; sub(/[}].*/, \"\", token); "
+            + "if(token ~ /^[A-Za-z0-9_.]+\\/[A-Za-z0-9_.$]+$/) {print token; exit}}}'";
     private IBinder service;
     private boolean checkedForService;
+
+    String foregroundActivity() {
+        return query(FOREGROUND);
+    }
+
+    boolean writeSystemSetting(Context context, String setting, int value) {
+        try {
+            if (Settings.System.putInt(context.getContentResolver(), setting, value)) return true;
+        } catch (SecurityException | IllegalArgumentException ignored) {
+            // Some stock settings are writable only through Retroid's service.
+        }
+        query("settings put system " + setting + " " + value);
+        return Settings.System.getInt(context.getContentResolver(), setting, -1) == value;
+    }
 
     String query(String command) {
         if (!checkedForService || (service != null && !service.isBinderAlive())) {

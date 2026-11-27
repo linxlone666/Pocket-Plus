@@ -670,6 +670,8 @@ public final class SetupActivity extends Activity {
         for (PerformanceMetric metric : metricOptions) {
             if (index++ % 2 == 0) {
                 row = new LinearLayout(this);
+                row.setBaselineAligned(false);
+                row.setGravity(Gravity.CENTER_VERTICAL);
                 controls.addView(row);
             }
             CheckBox toggle = new CheckBox(this);
